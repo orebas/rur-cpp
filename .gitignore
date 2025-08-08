@@ -1,0 +1,98 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+
+# Compiled Object files
+*.o
+*.obj
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Cache and temporary files
+.cache/
+.ninja_deps
+.ninja_log
+*.log
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+build.ninja
+CTestTestfile.cmake
+Testing/
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test executables (keeping only source files)
+test_*
+!test_*.cpp
+!test_*.c
+!test_*.hpp
+!test_*.h
+!test/
+
+# Debug executables
+debug_*
+!debug_*.cpp
+!debug_*.c
+
+# Other generated files
+librur.a
+demo_rur
+run_tests
+rur_tests
+rur_tests[1]_include.cmake
+rur_tests[1]_tests.cmake
+
+# External dependencies
+vcpkg/
+external/
+
+# Documentation PDFs
+*.pdf
+*.pdf:Zone.Identifier
+
+# Archive files
+*.zip
+*.zip:Zone.Identifier
+
+# Julia test files (if not needed in C++ repo)
+*.jl
+
+# Python analysis scripts (keep the source)
+!*.py
+
+# Temporary and log files
+*.txt
+!CMakeLists.txt
+claude_run*.log
+inst*.txt
+done.txt
+helpme.txt
+threevarloop.txt
+cyclic4_zerodim.txt
+
+# Keep important documentation
+!README.md
+!docs/
+!*.md
