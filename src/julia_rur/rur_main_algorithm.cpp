@@ -849,6 +849,11 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
                                                                              prime,
                                                                              std::vector<int>(),
                                                                              static_cast<int32_t>(variables.size()));
+        if (success) {
+            // Record that we used the last variable as separating element
+            found_coeffs.assign(variables.size(), 0);
+            found_coeffs[variables.size() - 1] = 1;
+        }
         // 2) If failed, try other single variables in reverse order
         if (!success) {
             for (int v = static_cast<int>(variables.size()) - 1; v >= 1; --v) {
@@ -859,7 +864,12 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
                                                                                      prime,
                                                                                      std::vector<int>(),
                                                                                      static_cast<int32_t>(v));
-                if (success) break;
+                if (success) {
+                    // Record which variable we used as separating element
+                    found_coeffs.assign(variables.size(), 0);
+                    found_coeffs[v - 1] = 1;
+                    break;
+                }
             }
         }
         // 3) Fall back to systematic linear-form search with increasing width

@@ -2,30 +2,63 @@
 #include "multiplication_tables.hpp" // For mul_var_quo
 #include "polynomial_operations.hpp" // For modular_inverse
 #include <iostream>
+#include <flint/nmod.h>
+#include <flint/nmod_vec.h>
+#include <flint/flint.h>
 
 namespace julia_rur {
 
-// Helper to perform Gaussian reduction on a row
+// Helper to perform Gaussian reduction on a row using FLINT nmod_vec
 bool gaussian_reduce_row(std::vector<ModularCoeff>& row, GaussianReductionContext& context, ModularCoeff prime) {
+    if (row.empty()) return true;
+    
+    // Set up FLINT nmod context
+    nmod_t mod;
+    nmod_init(&mod, prime);
+    
+    size_t n = row.size();
+    
+    // Allocate FLINT vector for the row (will be freed automatically)
+    nn_ptr row_vec = _nmod_vec_init(n);
+    
+    // Copy input row to FLINT format
+    for (size_t j = 0; j < n; ++j) {
+        row_vec[j] = row[j];
+    }
+    
+    // Reduce against each row in the context matrix
     for (size_t i = 0; i < context.matrix.size(); ++i) {
         int32_t pivot_col = context.pivot_columns[i];
-        if (pivot_col < 0) continue;
+        if (pivot_col < 0 || pivot_col >= static_cast<int32_t>(n)) continue;
 
-        ModularCoeff factor = row[pivot_col];
+        ModularCoeff factor = row_vec[pivot_col];
         if (factor == 0) continue;
-
-        // row -= factor * matrix[i]
-        for (size_t j = 0; j < row.size(); ++j) {
-            AccModularCoeff prod = static_cast<AccModularCoeff>(factor) * context.matrix[i][j];
-            row[j] = (row[j] + prime - (prod % prime)) % prime;
+        
+        // Allocate FLINT vector for the matrix row
+        nn_ptr matrix_row_vec = _nmod_vec_init(n);
+        
+        // Copy matrix row to FLINT format
+        for (size_t j = 0; j < n; ++j) {
+            matrix_row_vec[j] = context.matrix[i][j];
         }
-    }
 
-    // Check if row is zero
-    for (ModularCoeff c : row) {
-        if (c != 0) return false;
+        // row_vec -= factor * matrix_row_vec using FLINT optimized operation
+        // This is equivalent to: row = row - factor * matrix[i]
+        _nmod_vec_scalar_addmul_nmod(row_vec, matrix_row_vec, n, nmod_neg(factor, mod), mod);
+        
+        _nmod_vec_clear(matrix_row_vec);
     }
-    return true;
+    
+    // Check if row is zero using FLINT
+    bool is_zero = _nmod_vec_is_zero(row_vec, n);
+    
+    // Copy result back to std::vector
+    for (size_t j = 0; j < n; ++j) {
+        row[j] = row_vec[j];
+    }
+    
+    _nmod_vec_clear(row_vec);
+    return is_zero;
 }
 
 
@@ -83,20 +116,47 @@ BivLexResult biv_lex(const std::vector<std::vector<ModularCoeff>>& t_v,
                 }
 
                 if (pivot != -1) {
+                    // Set up FLINT context for normalization and reduction
+                    nmod_t mod;
+                    nmod_init(&mod, prime);
+                    size_t n = new_vec.size();
+                    
+                    // Normalize the new row using FLINT
                     ModularCoeff inv = modular_inverse(new_vec[pivot], prime);
-                    for (size_t j = 0; j < new_vec.size(); ++j) {
-                        new_vec[j] = (static_cast<AccModularCoeff>(new_vec[j]) * inv) % prime;
+                    nn_ptr new_vec_ptr = _nmod_vec_init(n);
+                    for (size_t j = 0; j < n; ++j) {
+                        new_vec_ptr[j] = new_vec[j];
+                    }
+                    _nmod_vec_scalar_mul_nmod(new_vec_ptr, new_vec_ptr, n, inv, mod);
+                    
+                    // Copy normalized result back
+                    for (size_t j = 0; j < n; ++j) {
+                        new_vec[j] = new_vec_ptr[j];
                     }
                     
-                    // Reduce other rows in the matrix
+                    // Reduce other rows in the matrix using FLINT
                     for(auto& row : context.matrix) {
                         ModularCoeff factor = row[pivot];
                         if (factor == 0) continue;
-                        for(size_t j = 0; j < row.size(); ++j) {
-                            AccModularCoeff prod = static_cast<AccModularCoeff>(factor) * new_vec[j];
-                            row[j] = (row[j] + prime - (prod % prime)) % prime;
+                        
+                        // Convert row to FLINT format
+                        nn_ptr row_ptr = _nmod_vec_init(n);
+                        for (size_t j = 0; j < n; ++j) {
+                            row_ptr[j] = row[j];
                         }
+                        
+                        // row -= factor * new_vec using FLINT
+                        _nmod_vec_scalar_addmul_nmod(row_ptr, new_vec_ptr, n, nmod_neg(factor, mod), mod);
+                        
+                        // Copy result back
+                        for (size_t j = 0; j < n; ++j) {
+                            row[j] = row_ptr[j];
+                        }
+                        
+                        _nmod_vec_clear(row_ptr);
                     }
+                    
+                    _nmod_vec_clear(new_vec_ptr);
 
                     context.matrix.push_back(new_vec);
                     context.pivot_columns.push_back(pivot);

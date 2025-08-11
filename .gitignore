@@ -2,6 +2,7 @@
 build/
 build-*/
 cmake-build-*/
+/build_clean/
 
 # Compiled Object files
 *.o
@@ -21,19 +22,41 @@ cmake-build-*/
 *.out
 *.app
 
-# Cache and temporary files
-.cache/
-.ninja_deps
-.ninja_log
-*.log
+# Test executables in root (keeping source files)
+/test_*
+!/test_*.cpp
+!/test_*.c
+/debug_*
+!/debug_*.cpp
+!/debug_*.c
+/check_*
+!/check_*.cpp
+!/check_*.c
+/analyze_*
+!/analyze_*.cpp
+!/analyze_*.c
 
-# CMake
+# Other executables in root
+/demo_rur
+/run_tests
+/rur_tests
+
+# CMake generated files
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 build.ninja
 CTestTestfile.cmake
 Testing/
+rur_tests[1]_include.cmake
+rur_tests[1]_tests.cmake
+*.cmake.backup
+
+# Cache and temporary files
+.cache/
+.ninja_deps
+.ninja_log
+*.log
 
 # IDE specific files
 .vscode/
@@ -43,30 +66,29 @@ Testing/
 *~
 .DS_Store
 
-# Test executables (keeping only source files)
-test_*
-!test_*.cpp
-!test_*.c
-!test_*.hpp
-!test_*.h
-!test/
-
-# Debug executables
-debug_*
-!debug_*.cpp
-!debug_*.c
-
-# Other generated files
-librur.a
-demo_rur
-run_tests
-rur_tests
-rur_tests[1]_include.cmake
-rur_tests[1]_tests.cmake
-
-# External dependencies
+# External dependencies (vcpkg managed)
 vcpkg/
-external/
+external/flint-install/
+external/flint-3.3.1/
+external/flint-*.tar.gz
+
+# Archive directory
+archive/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Output files from tests
+*.txt
+!CMakeLists.txt
+!examples/*.txt
+
+# Python cache
+__pycache__/
+*.pyc
 
 # Documentation PDFs
 *.pdf
@@ -74,25 +96,20 @@ external/
 
 # Archive files
 *.zip
+*.tar.gz
 *.zip:Zone.Identifier
 
-# Julia test files (if not needed in C++ repo)
-*.jl
+# Core dumps
+core
+core.*
 
-# Python analysis scripts (keep the source)
-!*.py
-
-# Temporary and log files
-*.txt
-!CMakeLists.txt
-claude_run*.log
-inst*.txt
-done.txt
-helpme.txt
-threevarloop.txt
-cyclic4_zerodim.txt
-
-# Keep important documentation
+# Keep important files
 !README.md
-!docs/
+!LICENSE
 !*.md
+!src/
+!test/
+!demo/
+!examples/
+!docs/
+!RationalUnivariateRepresentation.jl/

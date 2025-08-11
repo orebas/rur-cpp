@@ -487,6 +487,7 @@ if(GTEST_FOUND)
         test/gtest/test_integration.cpp
         test/gtest/test_benchmark_systems.cpp
         test/gtest/test_positive_dimensional.cpp
+        test/gtest/test_underdetermined_systems.cpp
     )
     
     target_link_libraries(rur_tests 

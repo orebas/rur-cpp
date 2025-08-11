@@ -197,8 +197,11 @@ TEST_F(BenchmarkSystemTests, Noon4) {
 }
 
 TEST_F(BenchmarkSystemTests, Eco7) {
-    // Eco-7 system: 7 variables, 21 solutions
+    // Eco-7 system: 7 variables, 127 solutions
     // Pattern: x_k^2 - x_{k+1} for k=1..6, and product = 1
+    // Mathematical analysis: x1=x0^2, x2=x0^4, ..., x6=x0^64
+    // Product constraint: x0*x0^2*x0^4*...*x0^64 = x0^(1+2+4+8+16+32+64) = x0^127 = 1
+    // Therefore, there are 127 complex 127th roots of unity as solutions
     std::vector<std::string> polynomials = {
         "x0^2 - x1", "x1^2 - x2", "x2^2 - x3", "x3^2 - x4", "x4^2 - x5", "x5^2 - x6", "x0*x1*x2*x3*x4*x5*x6 - 1"
     };
@@ -206,8 +209,8 @@ TEST_F(BenchmarkSystemTests, Eco7) {
 
     auto solution = solve_system(polynomials, variables);
 
-    // Eco-7 should have exactly 21 solutions
-    assert_solution_valid(solution, 21);
+    // Eco-7 has exactly 127 complex solutions (x0^127 = 1 has 127 roots)
+    assert_solution_valid(solution, 127);
 }
 
 TEST_F(BenchmarkSystemTests, Cyclic4ZeroDim) {

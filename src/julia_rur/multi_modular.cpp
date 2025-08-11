@@ -106,38 +106,67 @@ chinese_remainder_theorem(mpz_class &result,
     }
 
     size_t n = primes.size();
+    if (n == 0) {
+        result = 0;
+        return mpz_class(1);
+    }
 
-    // Compute total modulus M = product of all primes
-    mpz_class M = 1;
-    for (ModularCoeff p : primes) { M *= p; }
-
-    // Precompute multipliers if not already done
-    if (multipliers.size() != n) {
-        multipliers.clear();
-        multipliers.reserve(n);
-
-        for (size_t i = 0; i < n; ++i) {
-            mpz_class Mi = M / primes[i];
-
-            // Find Mi_inv such that Mi * Mi_inv ≡ 1 (mod primes[i])
-            ExtendedGCDResult egcd = extended_gcd(Mi, mpz_class(primes[i]));
-            mpz_class Mi_inv = egcd.x;
-
-            // Ensure Mi_inv is positive
-            while (Mi_inv < 0) { Mi_inv += primes[i]; }
-
-            multipliers.push_back(Mi * Mi_inv);
+    bool debug_crt = std::getenv("RUR_DEBUG_CRT") != nullptr;
+    if (debug_crt) {
+        std::cout << "CRT DEBUG: Computing CRT for " << n << " remainders/primes" << std::endl;
+        for (size_t i = 0; i < std::min(n, size_t(3)); ++i) {
+            std::cout << "  [" << i << "] r=" << remainders[i] << " mod " << primes[i] << std::endl;
         }
     }
 
-    // Apply CRT formula: result = sum(remainders[i] * multipliers[i]) mod M
-    result = 0;
-    for (size_t i = 0; i < n; ++i) { result += mpz_class(remainders[i]) * multipliers[i]; }
-    result %= M;
+    // Use FLINT's multi-CRT for better performance
+    fmpz * moduli = _fmpz_vec_init(n);
+    fmpz * values = _fmpz_vec_init(n);
+    fmpz_t output;
+    fmpz_init(output);
 
-    // Ensure result is positive
-    if (result < 0) { result += M; }
+    // Convert input to FLINT format
+    for (size_t i = 0; i < n; ++i) {
+        fmpz_set_ui(moduli + i, primes[i]);
+        fmpz_set_ui(values + i, remainders[i]);
+    }
 
+    if (debug_crt) {
+        std::cout << "CRT DEBUG: Calling fmpz_multi_CRT with " << n << " inputs" << std::endl;
+    }
+
+    // Compute multi-CRT
+    int success = fmpz_multi_CRT(output, moduli, values, n, 1);
+
+    if (debug_crt) {
+        std::cout << "CRT DEBUG: fmpz_multi_CRT returned " << success << std::endl;
+    }
+
+    if (!success) {
+        _fmpz_vec_clear(moduli, n);
+        _fmpz_vec_clear(values, n);
+        fmpz_clear(output);
+        throw std::runtime_error("FLINT fmpz_multi_CRT failed");
+    }
+    
+    // Convert result back to mpz_class
+    mpz_t temp_result;
+    mpz_init(temp_result);
+    fmpz_get_mpz(temp_result, output);
+    result = mpz_class(temp_result);
+    
+    // Compute modulus product
+    mpz_class M = 1;
+    for (size_t i = 0; i < n; ++i) { M *= primes[i]; }
+
+    if (debug_crt) {
+        std::cout << "CRT DEBUG: Result = " << result << ", Modulus = " << M << std::endl;
+    }
+
+    mpz_clear(temp_result);
+    _fmpz_vec_clear(moduli, n);
+    _fmpz_vec_clear(values, n);
+    fmpz_clear(output);
     return M;
 }
 
