@@ -5,6 +5,9 @@
 #include <cstdlib>
 #include <ctime>
 #include <stdexcept>
+#include <flint/fmpz.h>
+#include <flint/fmpz_factor.h>
+#include <flint/fmpz_vec.h>
 
 
 namespace julia_rur {
@@ -13,22 +16,20 @@ namespace julia_rur {
 
 bool
 is_prime(ModularCoeff n) {
-    if (n <= 1) return false;
-    if (n <= 3) return true;
-    if (n % 2 == 0 || n % 3 == 0) return false;
-
-    // Check divisibility up to sqrt(n)
-    for (ModularCoeff i = 5; i * i <= n; i += 6) {
-        if (n % i == 0 || n % (i + 2) == 0) { return false; }
-    }
-    return true;
+    // Use FLINT's optimized primality test
+    fmpz_t f;
+    fmpz_init(f);
+    fmpz_set_ui(f, n);
+    int result = fmpz_is_probabprime(f);
+    fmpz_clear(f);
+    return result > 0;
 }
 
 // No longer needed - F4 bug has been fixed
 
 ModularCoeff
 prev_prime(ModularCoeff n) {
-    // Find the largest prime less than n
+    // Use FLINT's optimized primality test in a simple search
     if (n <= 2) { throw std::invalid_argument("No prime less than 2"); }
 
     n--; // Start checking from n-1
@@ -38,7 +39,6 @@ prev_prime(ModularCoeff n) {
     }
 
     if (n <= 1) { throw std::invalid_argument("No prime found"); }
-
     return n;
 }
 
@@ -70,37 +70,29 @@ ExtendedGCDResult
 extended_gcd(const mpz_class &a, const mpz_class &b) {
     ExtendedGCDResult result;
 
-    if (b == 0) {
-        result.gcd = a;
-        result.x = 1;
-        result.y = 0;
-        return result;
-    }
-
-    mpz_class old_r = a, r = b;
-    mpz_class old_s = 1, s = 0;
-    mpz_class old_t = 0, t = 1;
-
-    while (r != 0) {
-        mpz_class quotient = old_r / r;
-
-        mpz_class temp = r;
-        r = old_r - quotient * r;
-        old_r = temp;
-
-        temp = s;
-        s = old_s - quotient * s;
-        old_s = temp;
-
-        temp = t;
-        t = old_t - quotient * t;
-        old_t = temp;
-    }
-
-    result.gcd = old_r;
-    result.x = old_s;
-    result.y = old_t;
-
+    // Use FLINT's optimized extended GCD
+    fmpz_t fa, fb, fgcd, fx, fy;
+    fmpz_init(fa); fmpz_init(fb); fmpz_init(fgcd); fmpz_init(fx); fmpz_init(fy);
+    
+    fmpz_set_mpz(fa, a.get_mpz_t());
+    fmpz_set_mpz(fb, b.get_mpz_t());
+    
+    fmpz_xgcd(fgcd, fx, fy, fa, fb);
+    
+    mpz_t temp_gcd, temp_x, temp_y;
+    mpz_init(temp_gcd); mpz_init(temp_x); mpz_init(temp_y);
+    
+    fmpz_get_mpz(temp_gcd, fgcd);
+    fmpz_get_mpz(temp_x, fx);
+    fmpz_get_mpz(temp_y, fy);
+    
+    result.gcd = mpz_class(temp_gcd);
+    result.x = mpz_class(temp_x);
+    result.y = mpz_class(temp_y);
+    
+    mpz_clear(temp_gcd); mpz_clear(temp_x); mpz_clear(temp_y);
+    fmpz_clear(fa); fmpz_clear(fb); fmpz_clear(fgcd); fmpz_clear(fx); fmpz_clear(fy);
+    
     return result;
 }
 
@@ -114,37 +106,41 @@ chinese_remainder_theorem(mpz_class &result,
     }
 
     size_t n = primes.size();
-
-    // Compute total modulus M = product of all primes
-    mpz_class M = 1;
-    for (ModularCoeff p : primes) { M *= p; }
-
-    // Precompute multipliers if not already done
-    if (multipliers.size() != n) {
-        multipliers.clear();
-        multipliers.reserve(n);
-
-        for (size_t i = 0; i < n; ++i) {
-            mpz_class Mi = M / primes[i];
-
-            // Find Mi_inv such that Mi * Mi_inv ≡ 1 (mod primes[i])
-            ExtendedGCDResult egcd = extended_gcd(Mi, mpz_class(primes[i]));
-            mpz_class Mi_inv = egcd.x;
-
-            // Ensure Mi_inv is positive
-            while (Mi_inv < 0) { Mi_inv += primes[i]; }
-
-            multipliers.push_back(Mi * Mi_inv);
-        }
+    if (n == 0) {
+        result = 0;
+        return mpz_class(1);
     }
 
-    // Apply CRT formula: result = sum(remainders[i] * multipliers[i]) mod M
-    result = 0;
-    for (size_t i = 0; i < n; ++i) { result += mpz_class(remainders[i]) * multipliers[i]; }
-    result %= M;
+    // Use iterative FLINT CRT for multiple moduli
+    fmpz_t f_result, f_mod, f_r2, f_m2;
+    fmpz_init(f_result); fmpz_init(f_mod); fmpz_init(f_r2); fmpz_init(f_m2);
 
-    // Ensure result is positive
-    if (result < 0) { result += M; }
+    // Start with first remainder and modulus
+    fmpz_set_ui(f_result, remainders[0]);
+    fmpz_set_ui(f_mod, primes[0]);
+
+    // Iteratively combine with remaining remainders
+    for (size_t i = 1; i < n; ++i) {
+        fmpz_set_ui(f_r2, remainders[i]);
+        fmpz_set_ui(f_m2, primes[i]);
+        
+        // Combine current result with new remainder/modulus
+        fmpz_CRT(f_result, f_result, f_mod, f_r2, f_m2, 1);
+        fmpz_mul(f_mod, f_mod, f_m2);
+    }
+
+    // Convert back to mpz_class
+    mpz_t temp_res, temp_mod;
+    mpz_init(temp_res); mpz_init(temp_mod);
+    fmpz_get_mpz(temp_res, f_result);
+    fmpz_get_mpz(temp_mod, f_mod);
+    
+    result = mpz_class(temp_res);
+    mpz_class M = mpz_class(temp_mod);
+
+    // Clean up
+    mpz_clear(temp_res); mpz_clear(temp_mod);
+    fmpz_clear(f_result); fmpz_clear(f_mod); fmpz_clear(f_r2); fmpz_clear(f_m2);
 
     return M;
 }
@@ -172,45 +168,68 @@ rational_reconstruction(const mpz_class &a, const mpz_class &m, const mpz_class 
         return RationalReconstructionResult(false, mpq_class(0));
     }
 
+    // Use FLINT's extended GCD for rational reconstruction  
     // Extended Euclidean algorithm with early termination
-    mpz_class r0 = m, r1 = a % m;
-    mpz_class s0 = 1, s1 = 0;
-    mpz_class t0 = 0, t1 = 1;
+    fmpz_t fr0, fr1, fs0, fs1, ft0, ft1, fq, ftemp, fN, fD;
+    fmpz_init(fr0); fmpz_init(fr1); fmpz_init(fs0); fmpz_init(fs1);
+    fmpz_init(ft0); fmpz_init(ft1); fmpz_init(fq); fmpz_init(ftemp);
+    fmpz_init(fN); fmpz_init(fD);
+    
+    fmpz_set_mpz(fr0, m.get_mpz_t());
+    fmpz_mod(fr1, fr0, fr0); // fr1 = a % m
+    fmpz_set_mpz(ftemp, a.get_mpz_t());
+    fmpz_mod(fr1, ftemp, fr0);
+    
+    fmpz_set_ui(fs0, 1); fmpz_set_ui(fs1, 0);
+    fmpz_set_ui(ft0, 0); fmpz_set_ui(ft1, 1);
+    fmpz_set_mpz(fN, N.get_mpz_t()); fmpz_set_mpz(fD, D.get_mpz_t());
 
-    while (r1 != 0 && r0 > N) {
-        mpz_class q = r0 / r1;
+    while (!fmpz_is_zero(fr1) && fmpz_cmp(fr0, fN) > 0) {
+        fmpz_fdiv_q(fq, fr0, fr1);
 
-        mpz_class temp = r1;
-        r1 = r0 - q * r1;
-        r0 = temp;
+        fmpz_set(ftemp, fr1);
+        fmpz_submul(fr1, fq, fr1); fmpz_add(fr1, fr0, fr1);
+        fmpz_set(fr0, ftemp);
 
-        temp = s1;
-        s1 = s0 - q * s1;
-        s0 = temp;
+        fmpz_set(ftemp, fs1);
+        fmpz_submul(fs1, fq, fs1); fmpz_add(fs1, fs0, fs1);
+        fmpz_set(fs0, ftemp);
 
-        temp = t1;
-        t1 = t0 - q * t1;
-        t0 = temp;
+        fmpz_set(ftemp, ft1);
+        fmpz_submul(ft1, fq, ft1); fmpz_add(ft1, ft0, ft1);
+        fmpz_set(ft0, ftemp);
     }
 
     // Check if we found a valid rational reconstruction
-    if (abs(t0) <= D && abs(r0) <= N && t0 != 0) {
+    fmpz_abs(ftemp, ft0);
+    if (fmpz_cmp(ftemp, fD) <= 0 && fmpz_cmp(fr0, fN) <= 0 && !fmpz_is_zero(ft0)) {
         // Normalize to positive denominator
-        if (t0 < 0) {
-            r0 = -r0;
-            t0 = -t0;
+        mpz_t temp_num, temp_den;
+        mpz_init(temp_num); mpz_init(temp_den);
+        
+        fmpz_get_mpz(temp_num, fr0);
+        fmpz_get_mpz(temp_den, ft0);
+        
+        if (mpz_sgn(temp_den) < 0) {
+            mpz_neg(temp_num, temp_num);
+            mpz_neg(temp_den, temp_den);
         }
-
-        // Verify: a * t0 ≡ r0 (mod m)
-        mpz_class verification = (a * t0 - r0) % m;
-        if (verification < 0) verification += m; // Normalize to [0, m-1]
-        if (verification == 0) {
-            mpq_class result(r0, t0);
-            result.canonicalize();
-            return RationalReconstructionResult(true, result);
-        }
+        
+        mpq_class result_rational{mpz_class(temp_num), mpz_class(temp_den)};
+        result_rational.canonicalize();
+        
+        mpz_clear(temp_num); mpz_clear(temp_den);
+        fmpz_clear(fr0); fmpz_clear(fr1); fmpz_clear(fs0); fmpz_clear(fs1);
+        fmpz_clear(ft0); fmpz_clear(ft1); fmpz_clear(fq); fmpz_clear(ftemp);
+        fmpz_clear(fN); fmpz_clear(fD);
+        
+        return RationalReconstructionResult(true, result_rational);
     }
 
+    fmpz_clear(fr0); fmpz_clear(fr1); fmpz_clear(fs0); fmpz_clear(fs1);
+    fmpz_clear(ft0); fmpz_clear(ft1); fmpz_clear(fq); fmpz_clear(ftemp);
+    fmpz_clear(fN); fmpz_clear(fD);
+    
     return RationalReconstructionResult(false, mpq_class(0));
 }
 

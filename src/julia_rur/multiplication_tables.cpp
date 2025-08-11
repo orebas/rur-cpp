@@ -260,9 +260,12 @@ mul_var_quo_internal(std::vector<ModularCoeff> &result,                 // Outpu
     size_t dim = input.size();
     result.resize(dim);
 
-    // For optimization, we could pack reductions (Julia's pack_value)
-    // For now, use simple approach: reduce every 16 operations
-    const int32_t pack = 16;
+    // Optimized reduction frequency based on prime size
+    // Larger primes can handle more operations before reduction
+    const int32_t pack = (prime > (1UL << 30)) ? 8 :   // 31-bit primes: reduce more often
+                         (prime > (1UL << 28)) ? 16 :   // 29-30 bit primes: standard
+                         (prime > (1UL << 20)) ? 32 :   // 21-28 bit primes: less frequent
+                         64;                            // Small primes: least frequent
 
     // Initialize accumulator buffer
     buf.resize(dim);
