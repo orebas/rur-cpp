@@ -8,13 +8,13 @@
 
 // Forward declare F4 internal structures we need access to
 extern "C" {
-    extern int f4_nvars;
     // F4 uses platform-specific INT type (int32 or int64)
     #if UINTPTR_MAX==0xFFFFFFFF
         typedef int INT;
     #else
         typedef long long int INT;
     #endif
+    extern INT f4_nvars;  // Use INT type to match axf4_lib.c
     extern INT* f4_monom;
     // EXPON macro from F4: returns pointer to exponent vector
     #define F4_EXPON(m) (f4_monom + (m)*(f4_nvars+1))

@@ -1,9 +1,9 @@
-#include "multiplication_tables.hpp"
 #include "univariate_parameterization.hpp"
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <random>
-#include <set>
 
 
 namespace julia_rur {
@@ -19,6 +19,11 @@ compute_univariate_parameterization_with_retry(
   int num_variables,
   ModularCoeff prime,
   int max_retries) {
+    bool timing = (std::getenv("RUR_TIMING") && std::string(std::getenv("RUR_TIMING")) != "0");
+    auto t_start_search = std::chrono::steady_clock::now();
+    long long candidates_tested = 0;
+    long long ms_minpoly_accum = 0;
+    long long ms_try_accum = 0;
     // CRITICAL FIX: Ensure '1' (a monomial of all zeros) is the first element of the quotient basis.
     // The entire julia_rur library assumes quotient_basis[0] is the constant monomial.
 
@@ -64,6 +69,7 @@ compute_univariate_parameterization_with_retry(
     // For single variable systems, just use the variable itself
     if (num_variables == 1) {
         std::cout << "Single variable system: using x1 as separating element" << std::endl;
+        auto t_start_try = std::chrono::steady_clock::now();
         auto [success, mp, params] = try_separating_element(quotient_basis,
                                                             i_xw,
                                                             t_v,
@@ -72,12 +78,29 @@ compute_univariate_parameterization_with_retry(
                                                             std::vector<int>(),
                                                             1 // Use variable 1 as separating element
         );
+        auto t_end_try = std::chrono::steady_clock::now();
+        ms_try_accum += std::chrono::duration_cast<std::chrono::milliseconds>(t_end_try - t_start_try).count();
+        candidates_tested++;
 
         if (success) {
+            if (timing) {
+                auto t_end_search = std::chrono::steady_clock::now();
+                auto ms_total =
+                  std::chrono::duration_cast<std::chrono::milliseconds>(t_end_search - t_start_search).count();
+                std::cout << "[timing.search] candidates=" << candidates_tested << " minpoly_ms=" << ms_minpoly_accum
+                          << " try_ms=" << ms_try_accum << " total_ms=" << ms_total << std::endl;
+            }
             std::cout << "SUCCESS: Single variable parameterization!" << std::endl;
             return { true, mp, params };
         } else {
             std::cerr << "Failed to parameterize single variable system!" << std::endl;
+            if (timing) {
+                auto t_end_search = std::chrono::steady_clock::now();
+                auto ms_total =
+                  std::chrono::duration_cast<std::chrono::milliseconds>(t_end_search - t_start_search).count();
+                std::cout << "[timing.search] candidates=" << candidates_tested << " minpoly_ms=" << ms_minpoly_accum
+                          << " try_ms=" << ms_try_accum << " total_ms=" << ms_total << std::endl;
+            }
             return { false, min_poly, parameterizations };
         }
     }
@@ -85,6 +108,7 @@ compute_univariate_parameterization_with_retry(
     // For multivariate systems, first try individual variables
     for (int var = num_variables; var >= 1; --var) {
         std::cout << "\nTrying variable x" << var << " as separating element..." << std::endl;
+        auto t_try_start_var = std::chrono::steady_clock::now();
         auto [success, mp, params] = try_separating_element(quotient_basis,
                                                             i_xw,
                                                             t_v,
@@ -93,9 +117,21 @@ compute_univariate_parameterization_with_retry(
                                                             std::vector<int>(),
                                                             var // Use variable var as separating element
         );
+        auto t_try_end_var = std::chrono::steady_clock::now();
+        ms_try_accum += std::chrono::duration_cast<std::chrono::milliseconds>(t_try_end_var - t_try_start_var).count();
+        candidates_tested++;
 
         if (success) {
-            std::cout << "SUCCESS: Variable x" << var << " is a separating element!" << std::endl;
+            if (timing) {
+                auto t_end_search = std::chrono::steady_clock::now();
+                auto ms_total =
+                  std::chrono::duration_cast<std::chrono::milliseconds>(t_end_search - t_start_search).count();
+                std::cout << "SUCCESS: Variable x" << var << " is a separating element!" << std::endl;
+                std::cout << "[timing.search] candidates=" << candidates_tested << " minpoly_ms=" << ms_minpoly_accum
+                          << " try_ms=" << ms_try_accum << " total_ms=" << ms_total << std::endl;
+            } else {
+                std::cout << "SUCCESS: Variable x" << var << " is a separating element!" << std::endl;
+            }
             return { true, mp, params };
         }
     }
@@ -144,15 +180,36 @@ compute_univariate_parameterization_with_retry(
             std::vector<int> coeffs = { c1, c2 };
 
             // Check if it's separating
+            auto t_mp_start_struct = std::chrono::steady_clock::now();
             MinimalPolynomialResult test_mp =
               compute_minimal_polynomial_flint(coeffs, i_xw, t_v, quotient_basis, prime);
+            auto t_mp_end_struct = std::chrono::steady_clock::now();
+            ms_minpoly_accum +=
+              std::chrono::duration_cast<std::chrono::milliseconds>(t_mp_end_struct - t_mp_start_struct).count();
+            candidates_tested++;
 
             if (test_mp.success) {
-                if (test_mp.degree == quotient_basis.size()) {
-                    std::cout << "  -> Minimal polynomial degree " << test_mp.degree << " matches quotient size!"
-                              << std::endl;
+                // Accept if degree matches quotient size OR if we have a non-radical ideal
+                // (original_degree > 0 indicates square-free was applied)
+                bool is_separating = (test_mp.degree == quotient_basis.size()) ||
+                                     (test_mp.original_degree > 0 && test_mp.original_degree == quotient_basis.size());
+                
+                if (is_separating) {
+                    if (test_mp.degree == quotient_basis.size()) {
+                        std::cout << "  -> Minimal polynomial degree " << test_mp.degree << " matches quotient size!"
+                                  << std::endl;
+                    } else {
+                        std::cout << "  -> Non-radical ideal: degree " << test_mp.degree 
+                                  << " (original " << test_mp.original_degree << ") for quotient size " 
+                                  << quotient_basis.size() << std::endl;
+                    }
+                    auto t_try_start_struct = std::chrono::steady_clock::now();
                     auto [success, mp, params] =
                       try_separating_element(quotient_basis, i_xw, t_v, num_variables, prime, coeffs, -1);
+                    auto t_try_end_struct = std::chrono::steady_clock::now();
+                    ms_try_accum +=
+                      std::chrono::duration_cast<std::chrono::milliseconds>(t_try_end_struct - t_try_start_struct)
+                        .count();
 
                     if (success) {
                         std::cout << "SUCCESS: Found separating linear combination " << c1 << "*x1 + " << c2 << "*x2!"
@@ -189,8 +246,13 @@ compute_univariate_parameterization_with_retry(
             std::cout << "]" << std::endl;
 
             // Use ONLY FLINT implementation (OLD method disabled - produces wrong coefficients)
+            auto t_mp_start_sys = std::chrono::steady_clock::now();
             MinimalPolynomialResult test_mp =
               compute_minimal_polynomial_flint(sep_coeffs, i_xw, t_v, quotient_basis, prime);
+            auto t_mp_end_sys = std::chrono::steady_clock::now();
+            ms_minpoly_accum +=
+              std::chrono::duration_cast<std::chrono::milliseconds>(t_mp_end_sys - t_mp_start_sys).count();
+            candidates_tested++;
 
             if (test_mp.success && test_mp.degree == quotient_basis.size()) {
                 std::cout << "  SUCCESS: Found separating element with coeffs [";
@@ -200,8 +262,12 @@ compute_univariate_parameterization_with_retry(
                 }
                 std::cout << "]" << std::endl;
 
+                auto t_try_start_sys = std::chrono::steady_clock::now();
                 auto [success, mp, params] =
                   try_separating_element(quotient_basis, i_xw, t_v, num_variables, prime, sep_coeffs, -1);
+                auto t_try_end_sys = std::chrono::steady_clock::now();
+                ms_try_accum +=
+                  std::chrono::duration_cast<std::chrono::milliseconds>(t_try_end_sys - t_try_start_sys).count();
                 if (success) { return { true, mp, params }; }
             }
 
@@ -247,8 +313,13 @@ compute_univariate_parameterization_with_retry(
         std::cout << "] mod " << prime << std::endl;
 
         // Check if it's potentially separating
+        auto t_mp_start_rand = std::chrono::steady_clock::now();
         MinimalPolynomialResult test_mp =
           compute_minimal_polynomial_flint(linear_form_coeffs, i_xw, t_v, quotient_basis, prime);
+        auto t_mp_end_rand = std::chrono::steady_clock::now();
+        ms_minpoly_accum +=
+          std::chrono::duration_cast<std::chrono::milliseconds>(t_mp_end_rand - t_mp_start_rand).count();
+        candidates_tested++;
         if (!test_mp.success || test_mp.degree != quotient_basis.size()) {
             std::cout << "  Random linear form is not separating (minimal poly degree " << test_mp.degree
                       << " != quotient size " << quotient_basis.size() << ")" << std::endl;
@@ -261,8 +332,12 @@ compute_univariate_parameterization_with_retry(
             continue;
         }
 
+        auto t_try_start_rand = std::chrono::steady_clock::now();
         auto [success, mp, params] =
           try_separating_element(quotient_basis, i_xw, t_v, num_variables, prime, linear_form_coeffs, -1);
+        auto t_try_end_rand = std::chrono::steady_clock::now();
+        ms_try_accum +=
+          std::chrono::duration_cast<std::chrono::milliseconds>(t_try_end_rand - t_try_start_rand).count();
 
         if (success) {
             std::cout << "SUCCESS: Found valid separating linear form with all linear parameterizations!" << std::endl;
@@ -280,10 +355,29 @@ compute_univariate_parameterization_with_retry(
       find_separating_element(quotient_basis, i_xw, t_v, num_variables, prime, SeparatingStrategy::DETERMINISTIC);
 
     if (!sep_coeffs_det.empty()) {
-        return try_separating_element(quotient_basis, i_xw, t_v, num_variables, prime, sep_coeffs_det, sep_var_det);
+        auto t_try_start_det = std::chrono::steady_clock::now();
+        auto result =
+          try_separating_element(quotient_basis, i_xw, t_v, num_variables, prime, sep_coeffs_det, sep_var_det);
+        auto t_try_end_det = std::chrono::steady_clock::now();
+        ms_try_accum += std::chrono::duration_cast<std::chrono::milliseconds>(t_try_end_det - t_try_start_det).count();
+        candidates_tested++;
+        if (timing) {
+            auto t_end_search = std::chrono::steady_clock::now();
+            auto ms_total =
+              std::chrono::duration_cast<std::chrono::milliseconds>(t_end_search - t_start_search).count();
+            std::cout << "[timing.search] candidates=" << candidates_tested << " minpoly_ms=" << ms_minpoly_accum
+                      << " try_ms=" << ms_try_accum << " total_ms=" << ms_total << std::endl;
+        }
+        return result;
     }
 
 
+    if (timing) {
+        auto t_end_search = std::chrono::steady_clock::now();
+        auto ms_total = std::chrono::duration_cast<std::chrono::milliseconds>(t_end_search - t_start_search).count();
+        std::cout << "[timing.search] candidates=" << candidates_tested << " minpoly_ms=" << ms_minpoly_accum
+                  << " try_ms=" << ms_try_accum << " total_ms=" << ms_total << std::endl;
+    }
     return { false, min_poly, parameterizations };
 }
 

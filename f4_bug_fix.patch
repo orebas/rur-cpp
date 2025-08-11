@@ -1,0 +1,25 @@
+--- src/axf4_lib.c.orig	2025-01-01 00:00:00.000000000 +0000
++++ src/axf4_lib.c	2025-01-01 00:00:00.000000000 +0000
+@@ -2468,6 +2468,11 @@ void f4_jordan_thread(void *par)
+ 	s = f4_reduce_import(vec, f4_array[st], 1);
+ 	f4_reduce_vector(s-1,vec,piv);
+ 	a = f4_reduce_export(s,vec);
++	if (!a) {
++		/* Handle case where reduction results in zero polynomial */
++		goto block;
++	}
++	
+ 	x = *(INT *)(a->ind);
+ 	red[x] = a;
+ 
+@@ -2555,7 +2560,11 @@ void f4_jordan()
+ 	piv[i] = 0;
+ 	f4_reduce_vector(i,vec,piv);
+ 	a = f4_reduce_export(i,vec);
+-	piv[i] = f4_reduce_monic(a);
++	if (a) {
++		piv[i] = f4_reduce_monic(a);
++	} else {
++		piv[i] = 0;
++	}
+ 

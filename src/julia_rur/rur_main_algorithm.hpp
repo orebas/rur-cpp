@@ -55,6 +55,9 @@ struct RURConfig {
     size_t num_threads = 1;         // Parallelization (future)
     SeparatingStrategy separating_strategy = SeparatingStrategy::CURRENT;
     bool verbose = false;
+    bool timing = false; // enable coarse timing logs
+    bool track_multiplicities = true; // Track and report multiplicities for non-radical ideals
+    bool apply_square_free = true;    // Apply square-free reduction (required for non-radical ideals)
 };
 
 /**

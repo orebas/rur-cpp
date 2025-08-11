@@ -1,11 +1,9 @@
 #include "polynomial_solver_enhanced.hpp"
-#include <algorithm>
+#include "hyperplane_sections.hpp"
 #include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
-#include "hyperplane_sections.hpp"
-#include <map>
 
 
 namespace julia_rur {
@@ -13,7 +11,7 @@ namespace julia_rur {
 RootFindingMethod
 analyze_polynomial_for_method(const std::vector<mpq_class> &polynomial_coeffs, const EnhancedSolverConfig &config) {
     if (config.root_method != RootFindingMethod::AUTO) { return config.root_method; }
-
+    
     // Find degree
     int degree = -1;
     for (int i = polynomial_coeffs.size() - 1; i >= 0; --i) {
@@ -22,10 +20,10 @@ analyze_polynomial_for_method(const std::vector<mpq_class> &polynomial_coeffs, c
             break;
         }
     }
-
+    
     // High degree polynomials benefit from FLINT's robustness
     if (degree > config.degree_threshold_for_flint) { return RootFindingMethod::FLINT; }
-
+    
     // Check coefficient sizes - large coefficients need arbitrary precision
     bool has_large_coeffs = false;
     for (const auto &coeff : polynomial_coeffs) {
@@ -37,9 +35,9 @@ analyze_polynomial_for_method(const std::vector<mpq_class> &polynomial_coeffs, c
             }
         }
     }
-
+    
     if (has_large_coeffs || config.prefer_certified_roots) { return RootFindingMethod::FLINT; }
-
+    
     // For moderate degree with reasonable coefficients, Eigen is faster
     return RootFindingMethod::EIGEN;
 }
@@ -49,7 +47,7 @@ find_roots_auto(const std::vector<mpq_class> &polynomial_coeffs,
                 const EnhancedSolverConfig &config,
                 std::optional<std::vector<double>> &error_bounds) {
     RootFindingMethod method = analyze_polynomial_for_method(polynomial_coeffs, config);
-
+    
     if (method == RootFindingMethod::FLINT) {
         std::vector<double> bounds;
         auto roots = find_polynomial_roots_certified(polynomial_coeffs, bounds, config.flint_config);
@@ -68,28 +66,28 @@ analyze_root_structure(const std::vector<std::complex<double>> &roots,
                        const EnhancedSolverConfig &config) {
     const double eps = config.imaginary_tolerance;
     const double cluster_eps = config.clustering_threshold;
-
+    
     // Clear previous analysis
     solution.root_multiplicities.clear();
     solution.conjugate_pairs.clear();
     solution.root_multiplicities.resize(roots.size(), 1);
-
+    
     // Find conjugate pairs
     std::vector<bool> paired(roots.size(), false);
-
+    
     for (size_t i = 0; i < roots.size(); ++i) {
         if (paired[i]) continue;
-
+        
         // Check if this root has non-zero imaginary part
         if (std::abs(roots[i].imag()) > eps) {
             // Look for its conjugate
             for (size_t j = i + 1; j < roots.size(); ++j) {
                 if (paired[j]) continue;
-
+                
                 // Check if j is conjugate of i
                 double real_diff = std::abs(roots[i].real() - roots[j].real());
                 double imag_sum = std::abs(roots[i].imag() + roots[j].imag());
-
+                
                 if (real_diff < cluster_eps && imag_sum < cluster_eps) {
                     solution.conjugate_pairs.push_back({ static_cast<int>(i), static_cast<int>(j) });
                     paired[i] = true;
@@ -99,20 +97,20 @@ analyze_root_structure(const std::vector<std::complex<double>> &roots,
             }
         }
     }
-
+    
     // Estimate multiplicities by clustering nearby roots
     std::vector<bool> counted(roots.size(), false);
-
+    
     for (size_t i = 0; i < roots.size(); ++i) {
         if (counted[i]) continue;
-
+        
         int multiplicity = 1;
         counted[i] = true;
-
+        
         // Find all roots close to this one
         for (size_t j = i + 1; j < roots.size(); ++j) {
             if (counted[j]) continue;
-
+            
             double dist = std::abs(roots[i] - roots[j]);
             if (dist < cluster_eps) {
                 multiplicity++;
@@ -120,7 +118,7 @@ analyze_root_structure(const std::vector<std::complex<double>> &roots,
                 solution.root_multiplicities[j] = 0; // Mark as part of cluster
             }
         }
-
+        
         solution.root_multiplicities[i] = multiplicity;
     }
 }
@@ -217,72 +215,163 @@ solve_polynomial_system_enhanced(const std::vector<std::string> &polynomials,
                                  const std::vector<std::string> &variables,
                                  const EnhancedSolverConfig &config) {
     auto start_time = std::chrono::high_resolution_clock::now();
-
+    
     EnhancedPolynomialSolution solution;
     solution.variable_names = variables;
     solution.success = false;
 
-    // Step 0: Quick dimensionality pre-check
+    // Step 0: Quick dimensionality pre-check (fast, single-prime)
     solution.computed_dimension = -1;
-    {
-        DimensionAnalysis dim = analyze_system_dimension(polynomials, variables);
+    if (!config.skip_dimension_precheck && config.enable_dimension_precheck &&
+        static_cast<int>(variables.size()) <= config.max_precheck_variables) {
+        // Use robust multi-prime analysis for better reliability
+        HyperplaneSectionConfig hcfg;
+        hcfg.dimension_num_primes = 3;  // Use multiple primes
+        DimensionAnalysis dim = analyze_system_dimension_robust(polynomials, variables, hcfg);
+        if (config.verbose) {
+            std::cout << "[precheck] dim=" << dim.dimension << " zero=" << (dim.is_zero_dimensional ? 1 : 0)
+                      << " auto_hp=" << (config.auto_hyperplane_sections ? 1 : 0)
+                      << " fail_on_posdim=" << (config.fail_on_positive_dimensional ? 1 : 0) << std::endl;
+        }
         if (dim.dimension >= 0) {
             solution.computed_dimension = dim.dimension;
             if (!dim.is_zero_dimensional) {
-                solution.error_message = "Positive-dimensional ideal (dimension " +
-                                         std::to_string(dim.dimension) +
-                                         "). Use adaptive solver for hyperplane sections.";
+                // Check configuration for how to handle positive-dimensional systems
+                if (config.fail_on_positive_dimensional) {
+                    solution.error_message =
+                      "System is positive-dimensional (dimension " + std::to_string(dim.dimension) + ")";
+                    return solution;
+                }
+
+                if (!config.auto_hyperplane_sections) {
+                    solution.error_message = "System is positive-dimensional and auto_hyperplane_sections is disabled";
+                    return solution;
+                }
+
+                // Default: fall back to adaptive hyperplane sections automatically
+                HyperplaneSectionConfig hcfg;
+                hcfg.verbose = config.verbose;
+                // No need to force_slicing here - the system is already detected as positive-dimensional
+                if (config.verbose) { std::cout << "[precheck] entering hyperplane sections" << std::endl; }
+                auto hp = solve_via_hyperplane_sections(polynomials, variables, hcfg);
+                if (hp.success) {
+                    solution = hp.solutions; // copy enhanced solution
+                    solution.success = true;
+                    solution.computed_dimension = dim.dimension;
+                    solution.hyperplanes_used = hp.hyperplanes;
+                    solution.error_message.clear();
+                } else {
+                    solution.error_message = hp.error_message.empty()
+                                               ? std::string("Adaptive solver failed for positive-dimensional ideal")
+                                               : hp.error_message;
+                }
                 return solution;
             }
         }
     }
-
+    
     // Step 1: Compute RUR
+    if (config.verbose) {
+        std::cout << "[RUR] start: m=" << polynomials.size() << " n=" << variables.size() << std::endl;
+    }
     RationalRURResult rur_result = compute_rational_rur(polynomials, variables, config);
-
+    
     if (!rur_result.success) {
-        solution.error_message = "RUR computation failed: " + rur_result.error_message;
+        // If dimension is unknown (precheck was skipped), compute it now lazily
+        if (solution.computed_dimension == -1) {
+            if (config.verbose) {
+                std::cout << "[RUR] failed, computing dimension lazily..." << std::endl;
+            }
+            // Use robust multi-prime analysis for better reliability
+        HyperplaneSectionConfig hcfg;
+        hcfg.dimension_num_primes = 3;  // Use multiple primes
+        DimensionAnalysis dim = analyze_system_dimension_robust(polynomials, variables, hcfg);
+            if (config.verbose) {
+                std::cout << "[RUR] dimension analysis result: dim=" << dim.dimension 
+                          << " zero=" << (dim.is_zero_dimensional ? 1 : 0)
+                          << " method=" << dim.method_used << std::endl;
+            }
+            if (dim.dimension >= 0) {
+                solution.computed_dimension = dim.dimension;
+            }
+        }
+        
+        // Check if system is positive-dimensional and handle accordingly
+        bool is_positive_dim = (solution.computed_dimension > 0);
+        
+        if (is_positive_dim && config.fail_on_positive_dimensional) {
+            solution.error_message = "System is positive-dimensional (dimension " + 
+                                   std::to_string(solution.computed_dimension) + ")";
+            return solution;
+        }
+        
+        // Only fall back to hyperplane slicing if the system is positive-dimensional
+        // RUR can fail for zero-dimensional systems due to unlucky primes or other issues
+        // In those cases, we should NOT add hyperplanes (which would make it overdetermined)
+        if (config.auto_hyperplane_sections && !config.fail_on_positive_dimensional && 
+            is_positive_dim) {
+            if (config.verbose) {
+                std::cout << "[RUR] failed on positive-dimensional system (dim=" 
+                          << solution.computed_dimension << "), falling back to hyperplane sections"
+                          << std::endl;
+            }
+            HyperplaneSectionConfig hcfg;
+            hcfg.verbose = config.verbose;
+            hcfg.force_slicing = true; // appropriate for positive-dimensional systems
+            auto hp = solve_via_hyperplane_sections(polynomials, variables, hcfg);
+            if (hp.success) {
+                solution = hp.solutions;
+                solution.success = true;
+                solution.hyperplanes_used = hp.hyperplanes;
+                solution.error_message.clear();
+                return solution;
+            }
+            solution.error_message = "Hyperplane slicing failed: " + hp.error_message;
+        } else {
+            // Zero-dimensional system or slicing disabled - report the RUR failure
+            solution.error_message = "RUR computation failed: " + rur_result.error_message;
+        }
         return solution;
     }
-
+    
     solution.minimal_polynomial = rur_result.minimal_polynomial;
     solution.quotient_dimension = rur_result.quotient_basis.size();
-
+    
     // Step 2: Find roots with enhanced method
     auto root_start = std::chrono::high_resolution_clock::now();
-
+    
     std::optional<std::vector<double>> error_bounds;
     std::vector<std::complex<double>> t_roots = find_roots_auto(rur_result.minimal_polynomial, config, error_bounds);
-
+    
     solution.method_used = analyze_polynomial_for_method(rur_result.minimal_polynomial, config);
-
+    
     if (error_bounds.has_value()) {
         solution.root_error_bounds = error_bounds.value();
         solution.roots_certified = true;
     }
-
+    
     auto root_end = std::chrono::high_resolution_clock::now();
     solution.root_finding_time_ms = std::chrono::duration<double, std::milli>(root_end - root_start).count();
-
+    
     if (t_roots.empty()) {
         solution.error_message = "No roots found for minimal polynomial";
         return solution;
     }
-
+    
     // Step 3: Compute f'(T) for parameterization denominators
     std::vector<mpq_class> derivative_coeffs;
     for (size_t i = 1; i < rur_result.minimal_polynomial.size(); ++i) {
         derivative_coeffs.push_back(rur_result.minimal_polynomial[i] * static_cast<int>(i));
     }
-
+    
     // Step 4: Back-substitute to find variable values
     for (const auto &t_root : t_roots) {
         std::vector<std::complex<double>> var_values;
-
+        
         if (config.verbose) {
             std::cout << "EVAL-DEBUG-ENH: solving for t_root=" << std::setprecision(15) << t_root << std::endl;
         }
-
+        
         if (variables.size() == 1) {
             // Univariate case - check if simple
             if (rur_result.numerators.empty() || rur_result.numerators[0].empty() ||
@@ -315,7 +404,7 @@ solve_polynomial_system_enhanced(const std::vector<std::string> &polynomials,
                 }
             }
         }
-
+        
         // Check if solution is real
         bool is_real = true;
         for (const auto &val : var_values) {
@@ -324,22 +413,22 @@ solve_polynomial_system_enhanced(const std::vector<std::string> &polynomials,
                 break;
             }
         }
-
+        
         // Apply filtering if requested
         if (!config.real_roots_only || is_real) {
             solution.solutions.push_back(var_values);
             solution.is_real_solution.push_back(is_real);
         }
     }
-
+    
     // Step 5: Analyze root structure
     analyze_root_structure(t_roots, solution, config);
-
+    
     solution.success = true;
-
+    
     auto end_time = std::chrono::high_resolution_clock::now();
     solution.total_time_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
-
+    
     return solution;
 }
 
@@ -349,7 +438,7 @@ print_enhanced_solution(const EnhancedPolynomialSolution &solution, std::ostream
         out << "Failed to solve system: " << solution.error_message << std::endl;
         return;
     }
-
+    
     out << "Enhanced Polynomial System Solution" << std::endl;
     out << "===================================" << std::endl;
     out << "Method used: ";
@@ -368,13 +457,13 @@ print_enhanced_solution(const EnhancedPolynomialSolution &solution, std::ostream
             break;
     }
     out << std::endl;
-
+    
     out << "Number of solutions: " << solution.solutions.size() << std::endl;
     out << "Quotient dimension: " << solution.quotient_dimension << std::endl;
     out << "Root finding time: " << std::fixed << std::setprecision(2) << solution.root_finding_time_ms << " ms"
         << std::endl;
     out << "Total time: " << solution.total_time_ms << " ms" << std::endl;
-
+    
     // Print minimal polynomial
     out << "\nMinimal polynomial: ";
     bool first = true;
@@ -383,10 +472,10 @@ print_enhanced_solution(const EnhancedPolynomialSolution &solution, std::ostream
         if (coeff != 0) {
             if (!first && coeff > 0) out << " + ";
             if (coeff < 0) out << " - ";
-
+            
             mpq_class abs_coeff = abs(coeff);
             if (abs_coeff != 1 || i == 0) { out << abs_coeff; }
-
+            
             if (i > 0) {
                 out << "T";
                 if (i > 1) out << "^" << i;
@@ -395,23 +484,23 @@ print_enhanced_solution(const EnhancedPolynomialSolution &solution, std::ostream
         }
     }
     out << " = 0" << std::endl;
-
+    
     // Print conjugate pairs if any
     if (!solution.conjugate_pairs.empty()) {
         out << "\nComplex conjugate pairs: ";
         for (const auto &pair : solution.conjugate_pairs) { out << "(" << pair[0] + 1 << "," << pair[1] + 1 << ") "; }
         out << std::endl;
     }
-
+    
     // Print solutions with error bounds if available
     out << "\nSolutions:" << std::endl;
     for (size_t i = 0; i < solution.solutions.size(); ++i) {
         out << std::setw(3) << (i + 1) << ". ";
-
+        
         for (size_t j = 0; j < solution.variable_names.size(); ++j) {
             if (j > 0) out << ", ";
             out << solution.variable_names[j] << " = ";
-
+            
             const auto &val = solution.solutions[i][j];
             if (solution.is_real_solution[i]) {
                 out << std::setprecision(15) << val.real();
@@ -424,15 +513,15 @@ print_enhanced_solution(const EnhancedPolynomialSolution &solution, std::ostream
                 out << std::abs(val.imag()) << "i";
             }
         }
-
+        
         if (solution.roots_certified && i < solution.root_error_bounds.size()) {
             out << " (±" << std::scientific << std::setprecision(2) << solution.root_error_bounds[i] << ")";
         }
-
+        
         if (i < solution.root_multiplicities.size() && solution.root_multiplicities[i] > 1) {
             out << " [mult: " << solution.root_multiplicities[i] << "]";
         }
-
+        
         if (solution.is_real_solution[i]) { out << " (real)"; }
         out << std::endl;
     }

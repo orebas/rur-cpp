@@ -4,6 +4,8 @@
 #include "data_structures.hpp"
 // #include "multiplication_tables.hpp" // not needed in header
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <random>
 #include <tuple>
 #include <vector>
@@ -27,6 +29,8 @@ struct MinimalPolynomialResult {
     std::vector<ModularCoeff> coefficients;        // Coefficients of minimal polynomial (low to high degree)
     std::vector<std::vector<ModularCoeff>> powers; // Powers of T in quotient basis (T^0, T^1, ..., T^(d-1))
     size_t degree;                                 // Degree of minimal polynomial
+    size_t original_degree = 0;                    // Original degree before square-free reduction (0 if not reduced)
+    size_t multiplicity = 1;                       // Multiplicity (original_degree / degree) if square-free was applied
     bool success;                                  // Whether computation succeeded
 };
 
@@ -124,6 +128,23 @@ compute_minimal_polynomial(const std::vector<ModularCoeff> &element,
                            ModularCoeff prime) {
     return compute_minimal_polynomial_flint(element, i_xw, t_v, quotient_basis, prime);
 }
+
+/**
+ * @brief Compute square-free part of polynomial using FLINT: f / gcd(f, f')
+ *
+ * Removes repeated factors from polynomial. For example:
+ * - If f = (x-a)^3 * (x-b)^2, returns (x-a) * (x-b)
+ * - Preserves geometric solutions, removes multiplicities
+ *
+ * Uses FLINT's nmod_poly functions for efficient computation.
+ *
+ * @param poly Polynomial coefficients (low to high degree)
+ * @param prime Modular arithmetic prime
+ * @param[out] original_degree Returns the original degree before reduction (optional)
+ * @return Square-free polynomial coefficients
+ */
+std::vector<ModularCoeff>
+compute_square_free_part(const std::vector<ModularCoeff> &poly, ModularCoeff prime, size_t *original_degree = nullptr);
 
 /**
  * @brief First variable algorithm - computes minimal polynomial of separating element
@@ -252,6 +273,8 @@ try_separating_element(const std::vector<PP> &quotient_basis,
                        ModularCoeff prime,
                        const std::vector<int> &sep_coeffs,
                        int32_t sep_var) {
+    bool timing = (std::getenv("RUR_TIMING") && std::string(std::getenv("RUR_TIMING")) != "0");
+    auto t_start_total = std::chrono::steady_clock::now();
     // CRITICAL CHECK: Ensure quotient_basis[0] is the constant monomial '1'
     if (!quotient_basis.empty()) {
         bool is_constant =
@@ -275,6 +298,7 @@ try_separating_element(const std::vector<PP> &quotient_basis,
     std::vector<BivariateResult> parameterizations(num_variables);
 
     // Compute minimal polynomial
+    auto t_start_minpoly = std::chrono::steady_clock::now();
     if (sep_var > 0) {
         // Single variable is separating
         min_poly = first_variable(sep_var, i_xw, t_v, quotient_basis, prime);
@@ -282,7 +306,13 @@ try_separating_element(const std::vector<PP> &quotient_basis,
         // Linear form is separating (specified by integer coefficients)
         min_poly = compute_minimal_polynomial_flint(sep_coeffs, i_xw, t_v, quotient_basis, prime);
     }
-    if (!min_poly.success || min_poly.degree != quotient_basis.size()) {
+    auto t_end_minpoly = std::chrono::steady_clock::now();
+    // Accept as separating if either the square-free degree equals the quotient dimension
+    // or the original (pre square-free) degree equals the quotient dimension.
+    bool is_separating =
+      min_poly.success && (min_poly.degree == quotient_basis.size() ||
+                           (min_poly.original_degree > 0 && min_poly.original_degree == quotient_basis.size()));
+    if (!is_separating) {
         if (min_poly.degree != quotient_basis.size()) {
             std::cout << "Random linear form is not separating (minimal poly degree " << min_poly.degree
                       << " != quotient size " << quotient_basis.size() << ")" << std::endl;
@@ -292,20 +322,45 @@ try_separating_element(const std::vector<PP> &quotient_basis,
         return { false, min_poly, parameterizations };
     }
     std::cout << "Computed minimal polynomial of degree " << min_poly.degree << std::endl;
-
-    // Compute parameterizations for each variable
-    bool all_success = true;
-    for (int i = 0; i < num_variables; ++i) {
-        std::cout << "Computing parameterization for variable " << i << std::endl;
-        parameterizations[i] = biv_lex(i + 1, min_poly, i_xw, t_v, quotient_basis.size(), prime);
-        if (!parameterizations[i].success) {
-            std::cerr << "Failed to compute parameterization for variable " << i << std::endl;
-            all_success = false;
-            break; // No point continuing if one failed
+    if (timing) {
+        auto ms_minpoly =
+          std::chrono::duration_cast<std::chrono::milliseconds>(t_end_minpoly - t_start_minpoly).count();
+        if (timing && std::getenv("RUR_VERBOSE_TIMING")) {
+            std::cout << "[timing.param] minpoly_ms=" << ms_minpoly << std::endl;
         }
     }
 
-    return { all_success, min_poly, parameterizations };
+    // Compute parameterizations for each variable. Note: even if some
+    // parameterizations via biv_lex fail, we still accept the separating
+    // element; numerators can be reconstructed later via identities.
+    //    bool all_success = true;
+    std::vector<long long> per_var_ms(num_variables, 0);
+    auto t_start_biv_all = std::chrono::steady_clock::now();
+    for (int i = 0; i < num_variables; ++i) {
+        if (std::getenv("RUR_VERBOSE_PROGRESS")) {
+            std::cout << "Computing parameterization for variable " << i << std::endl;
+        }
+        auto t_start_biv = std::chrono::steady_clock::now();
+        parameterizations[i] = biv_lex(i + 1, min_poly, i_xw, t_v, quotient_basis.size(), prime);
+        auto t_end_biv = std::chrono::steady_clock::now();
+        per_var_ms[i] = std::chrono::duration_cast<std::chrono::milliseconds>(t_end_biv - t_start_biv).count();
+        if (timing && std::getenv("RUR_VERBOSE_TIMING")) { 
+            std::cout << "[timing.param] biv_lex var=" << (i + 1) << " ms=" << per_var_ms[i] << std::endl; 
+        }
+        if (!parameterizations[i].success) { std::cerr << "biv_lex failed for variable " << i << std::endl; }
+    }
+    auto t_end_biv_all = std::chrono::steady_clock::now();
+    if (timing) {
+        auto ms_biv_all =
+          std::chrono::duration_cast<std::chrono::milliseconds>(t_end_biv_all - t_start_biv_all).count();
+        auto ms_total = std::chrono::duration_cast<std::chrono::milliseconds>(t_end_biv_all - t_start_total).count();
+        if (std::getenv("RUR_VERBOSE_TIMING")) {
+            std::cout << "[timing.param] biv_total_ms=" << ms_biv_all << " total_param_ms=" << ms_total << std::endl;
+        }
+    }
+
+    // Always return success as minpoly is separating; callers can rebuild numerators by identity
+    return { true, min_poly, parameterizations };
 }
 
 

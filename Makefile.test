@@ -1,0 +1,39 @@
+# Makefile for F4 infinite loop test
+
+CXX = g++
+CC = gcc
+CXXFLAGS = -std=c++11 -g -O2 -I.
+CFLAGS = -g -O2 -I.
+LDFLAGS = -lm -lpthread
+
+# Source files
+TEST_SRC = test_f4_infinite_loop.cpp
+WRAPPER_SRC = src/axf4_wrapper.c
+F4_LIB_SRC = src/axf4_lib.c
+
+# Object files
+TEST_OBJ = $(TEST_SRC:.cpp=.o)
+WRAPPER_OBJ = $(WRAPPER_SRC:.c=.o)
+F4_LIB_OBJ = $(F4_LIB_SRC:.c=.o)
+
+# Target executable
+TARGET = test_f4_infinite_loop
+
+all: $(TARGET)
+
+$(TARGET): $(TEST_OBJ) $(WRAPPER_OBJ) $(F4_LIB_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+clean:
+	rm -f $(TEST_OBJ) $(WRAPPER_OBJ) $(F4_LIB_OBJ) $(TARGET)
+
+run: $(TARGET)
+	./$(TARGET)
+
+.PHONY: all clean run

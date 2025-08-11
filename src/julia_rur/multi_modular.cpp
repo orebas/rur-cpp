@@ -350,9 +350,13 @@ crt_and_rational_reconstruction(std::vector<std::vector<mpq_class>> &qq_result,
     if (verbose_crt) {
         std::cout << "CRT DEBUG: Starting reconstruction with " << used_primes.size() << " primes" << std::endl;
     }
-    std::cout << "  Reference dimensions: " << reference_mod_p.size() << " polynomials" << std::endl;
-    for (size_t i = 0; i < std::min(reference_mod_p.size(), size_t(3)); ++i) {
-        std::cout << "    Poly " << i << ": " << reference_mod_p[i].size() << " coefficients" << std::endl;
+    if (std::getenv("RUR_VERBOSE_CRT")) {
+        std::cout << "  Reference dimensions: " << reference_mod_p.size() << " polynomials" << std::endl;
+    }
+    if (std::getenv("RUR_VERBOSE_CRT")) {
+        for (size_t i = 0; i < std::min(reference_mod_p.size(), size_t(3)); ++i) {
+            std::cout << "    Poly " << i << ": " << reference_mod_p[i].size() << " coefficients" << std::endl;
+        }
     }
 
     if (qq_result.empty()) {
@@ -389,9 +393,13 @@ crt_and_rational_reconstruction(std::vector<std::vector<mpq_class>> &qq_result,
             if (i == 0 && j == 6) {
                 if (verbose_crt) { std::cout << "CRT DEBUG: Coefficient [0][6] remainders (first 10):" << std::endl; }
                 for (size_t k = 0; k < std::min(used_primes.size(), size_t(10)); ++k) {
-                    std::cout << "  Prime " << used_primes[k] << ": remainder " << rems[k] << std::endl;
+                    if (std::getenv("RUR_VERBOSE_CRT")) {
+                        std::cout << "  Prime " << used_primes[k] << ": remainder " << rems[k] << std::endl;
+                    }
                 }
-                std::cout << "  ... (showing first 10 of " << used_primes.size() << " primes)" << std::endl;
+                if (std::getenv("RUR_VERBOSE_CRT")) {
+                    std::cout << "  ... (showing first 10 of " << used_primes.size() << " primes)" << std::endl;
+                }
             }
 
             mpz_class crt_result;
@@ -433,26 +441,40 @@ crt_and_rational_reconstruction(std::vector<std::vector<mpq_class>> &qq_result,
                         if (res4.success) {
                             qq_result[i][j] = res4.rational;
                         } else {
+                            // Final fallback even when reuse is available: try no-verify balanced bounds
+                            auto res_nv = rational_reconstruction_with_denominator_no_verify(
+                              crt_result, known_denominator, modulus, bounds_balanced.N, bounds_balanced.D);
+                            if (res_nv.success) {
+                                qq_result[i][j] = res_nv.rational;
+                            } else {
+                                std::cout << "CRT FAILURE: Rational reconstruction failed for coefficient [" << i
+                                          << "][" << j << "]" << std::endl;
+                                std::cout << "  CRT result: " << crt_result << std::endl;
+                                std::cout << "  Modulus: " << modulus << std::endl;
+                                std::cout << "  Verification: expected " << zp_verify << " mod " << verification_prime
+                                          << std::endl;
+                                std::cout << "  All 4 reconstruction methods failed" << std::endl;
+                                all_success = false;
+                                break;
+                            }
+                        }
+                    } else {
+                        // Final fallback: attempt no-verify rational reconstruction with balanced bounds
+                        auto res_nv = rational_reconstruction_with_denominator_no_verify(
+                          crt_result, known_denominator, modulus, bounds_balanced.N, bounds_balanced.D);
+                        if (res_nv.success) {
+                            qq_result[i][j] = res_nv.rational;
+                        } else {
                             std::cout << "CRT FAILURE: Rational reconstruction failed for coefficient [" << i << "]["
-                                      << j << "]" << std::endl;
+                                      << j << "] (no previous coefficient available for reuse strategy)" << std::endl;
                             std::cout << "  CRT result: " << crt_result << std::endl;
                             std::cout << "  Modulus: " << modulus << std::endl;
                             std::cout << "  Verification: expected " << zp_verify << " mod " << verification_prime
                                       << std::endl;
-                            std::cout << "  All 4 reconstruction methods failed" << std::endl;
+                            std::cout << "  First 3 reconstruction methods failed" << std::endl;
                             all_success = false;
                             break;
                         }
-                    } else {
-                        std::cout << "CRT FAILURE: Rational reconstruction failed for coefficient [" << i << "][" << j
-                                  << "] (no previous coefficient available for reuse strategy)" << std::endl;
-                        std::cout << "  CRT result: " << crt_result << std::endl;
-                        std::cout << "  Modulus: " << modulus << std::endl;
-                        std::cout << "  Verification: expected " << zp_verify << " mod " << verification_prime
-                                  << std::endl;
-                        std::cout << "  First 3 reconstruction methods failed" << std::endl;
-                        all_success = false;
-                        break;
                     }
                 }
             }

@@ -7,6 +7,10 @@
 #include <iostream>
 #include <random>
 
+extern "C" {
+#include <flint/nmod_poly.h>
+}
+
 namespace julia_rur {
 
 // Helper function to multiply two elements in the quotient ring
@@ -27,6 +31,11 @@ multiply_elements_in_quotient(const std::vector<ModularCoeff> &element1,
     size_t n_vars = quotient_basis[0].size();
     std::vector<ModularCoeff> result(quotient_basis_size, 0);
 
+    // Pre-allocate buffers to reduce allocations in inner loops
+    std::vector<ModularCoeff> temp;
+    temp.reserve(quotient_basis_size);
+    std::vector<ModularCoeff> next(quotient_basis_size, 0);
+
     // For each monomial in element1
     for (size_t i = 0; i < quotient_basis_size; ++i) {
         if (element1[i] == 0) continue;
@@ -39,7 +48,7 @@ multiply_elements_in_quotient(const std::vector<ModularCoeff> &element1,
             // Size mismatch - can't multiply
             return std::vector<ModularCoeff>();
         }
-        std::vector<ModularCoeff> temp = element2;
+        temp.assign(element2.begin(), element2.end());
         for (size_t j = 0; j < quotient_basis_size; ++j) {
             temp[j] = (static_cast<AccModularCoeff>(temp[j]) * element1[i]) % prime;
         }
@@ -47,9 +56,9 @@ multiply_elements_in_quotient(const std::vector<ModularCoeff> &element1,
         // Multiply by each variable in the monomial
         for (size_t var_idx = 0; var_idx < n_vars; ++var_idx) {
             for (int deg = 0; deg < monomial[var_idx]; ++deg) {
-                std::vector<ModularCoeff> next(quotient_basis_size, 0);
+                std::fill(next.begin(), next.end(), 0);
                 mul_var_quo(next, temp, var_idx + 1, i_xw, t_v, prime);
-                temp = next;
+                temp.swap(next);
             }
         }
 
@@ -411,9 +420,9 @@ first_variable(int32_t separating_var_index,
     }
 
     int32_t table_idx = i_xw[separating_var_index - 1][0]; // Entry for var * 1
-    const bool verbose_uv = false;
+    const bool verbose_uv = false;  // Disabled for clean output
     if (verbose_uv) {
-        std::cout << "DEBUG first_variable: separating_var_index=" << separating_var_index
+        std::cout << "[DEBUG] first_variable: separating_var_index=" << separating_var_index
                   << ", i_xw size=" << i_xw.size() << ", table_idx=" << table_idx << ", t_v size=" << t_v.size()
                   << std::endl;
     }
@@ -427,12 +436,14 @@ first_variable(int32_t separating_var_index,
 
     const std::vector<ModularCoeff> &element = t_v[table_idx - 1];
     if (verbose_uv) {
-        std::cout << "DEBUG first_variable: element size=" << element.size() << ", values=[";
-        for (size_t i = 0; i < element.size(); ++i) {
+        std::cout << "[DEBUG] first_variable: element size=" << element.size() << ", values=[";
+        for (size_t i = 0; i < element.size() && i < 20; ++i) {  // Limit output
             if (i > 0) std::cout << ",";
             std::cout << element[i];
         }
+        if (element.size() > 20) std::cout << ",...";
         std::cout << "]" << std::endl;
+        std::cout << "[DEBUG] Quotient basis size=" << quotient_basis.size() << std::endl;
     }
 
     // This centralized function handles all cases, including 1-D.
@@ -883,7 +894,9 @@ compute_univariate_parameterization(const std::vector<PP> &quotient_basis,
 
     // Step 3: Compute parameterizations for each variable
     for (int i = 0; i < num_variables; ++i) {
-        std::cout << "Computing parameterization for variable " << i << std::endl;
+        if (std::getenv("RUR_VERBOSE_PROGRESS")) {
+            std::cout << "Computing parameterization for variable " << i << std::endl;
+        }
         parameterizations[i] = biv_lex(i + 1, min_poly, i_xw, t_v, quotient_basis.size(), prime);
         if (!parameterizations[i].success) {
             std::cerr << "Failed to compute parameterization for variable " << i << std::endl;
@@ -935,15 +948,16 @@ compute_minimal_polynomial_flint(const std::vector<ModularCoeff> &element,
     result.success = false;
     size_t d = quotient_basis.size();
 
-    const bool verbose_minpoly = false;
+    const bool verbose_minpoly = false;  // Disabled for clean output
     if (verbose_minpoly) {
         std::cout << "\n=== compute_minimal_polynomial_flint (NEW) ===" << std::endl;
         std::cout << "Quotient basis size d = " << d << std::endl;
         std::cout << "Element vector: [";
-        for (size_t i = 0; i < element.size(); ++i) {
+        for (size_t i = 0; i < element.size() && i < 20; ++i) {
             if (i > 0) std::cout << ", ";
             std::cout << element[i];
         }
+        if (element.size() > 20) std::cout << ",...";
         std::cout << "]" << std::endl;
     }
 
@@ -961,7 +975,21 @@ compute_minimal_polynomial_flint(const std::vector<ModularCoeff> &element,
         return result;
     }
 
-    // Use FLINT to build matrix of powers and find linear dependence
+    // Precompute multiplication-by-element linear map M (d x d)
+    // Column j is the product (basis_j * element)
+    std::vector<std::vector<ModularCoeff>> M_rows(d, std::vector<ModularCoeff>(d, 0));
+    {
+        std::vector<ModularCoeff> basis_vec(d, 0);
+        for (size_t j = 0; j < d; ++j) {
+            std::fill(basis_vec.begin(), basis_vec.end(), 0);
+            basis_vec[j] = 1;
+            std::vector<ModularCoeff> col =
+              multiply_elements_in_quotient(basis_vec, element, quotient_basis, i_xw, t_v, prime);
+            for (size_t i = 0; i < d; ++i) { M_rows[i][j] = col[i]; }
+        }
+    }
+
+    // Use M to build matrix of powers and find linear dependence
     flint_linalg::NModMat power_matrix(d + 1, d, prime);
 
     // Current power of the element
@@ -970,6 +998,17 @@ compute_minimal_polynomial_flint(const std::vector<ModularCoeff> &element,
 
     // Store powers for later use
     result.powers.clear();
+
+    auto matvec = [&](const std::vector<ModularCoeff> &x) {
+        std::vector<ModularCoeff> y(d, 0);
+        for (size_t i = 0; i < d; ++i) {
+            AccModularCoeff acc = 0;
+            const auto &row = M_rows[i];
+            for (size_t j = 0; j < d; ++j) { acc += static_cast<AccModularCoeff>(row[j]) * x[j]; }
+            y[i] = static_cast<ModularCoeff>(acc % prime);
+        }
+        return y;
+    };
 
     for (size_t k = 0; k <= d; ++k) {
         if (verbose_minpoly) { std::cout << "  Power T^" << k << " = ["; }
@@ -986,81 +1025,169 @@ compute_minimal_polynomial_flint(const std::vector<ModularCoeff> &element,
         result.powers.push_back(current_power);
 
         // Compute next power if we're not at the last iteration
-        if (k < d) {
-            current_power = multiply_elements_in_quotient(current_power, element, quotient_basis, i_xw, t_v, prime);
+        if (k < d) { current_power = matvec(current_power); }
+    }
+
+    // One-shot nullspace on full transposed power matrix (d x (d+1))
+    nmod_mat_t transposed;
+    nmod_mat_init(transposed, d, d + 1, prime);
+    for (size_t i = 0; i <= d; ++i) {
+        for (size_t j = 0; j < d; ++j) { nmod_mat_set_entry(transposed, j, i, power_matrix.get_entry(i, j)); }
+    }
+
+    nmod_mat_t nullsp;
+    nmod_mat_init(nullsp, d + 1, d, prime);
+    slong nullity = nmod_mat_nullspace(nullsp, transposed);
+    if (verbose_minpoly) { std::cout << "  Nullspace dimension: " << nullity << std::endl; }
+
+    if (nullity <= 0) {
+        if (verbose_minpoly) { std::cout << "ERROR: No linear dependence found up to degree " << d << std::endl; }
+        nmod_mat_clear(nullsp);
+        nmod_mat_clear(transposed);
+        return result;
+    }
+
+    // Choose the null vector with smallest degree (highest non-zero index minimal)
+    size_t best_deg = d + 1;
+    std::vector<ModularCoeff> best_coeffs;
+    for (slong col = 0; col < nullity; ++col) {
+        std::vector<ModularCoeff> coeffs(d + 1);
+        size_t deg = 0;
+        for (size_t i = 0; i <= d; ++i) { coeffs[i] = nmod_mat_get_entry(nullsp, i, col); }
+        for (size_t i = coeffs.size(); i-- > 0;) {
+            if (coeffs[i] != 0) {
+                deg = i;
+                break;
+            }
+        }
+        if (deg < best_deg) {
+            best_deg = deg;
+            best_coeffs.swap(coeffs);
         }
     }
 
-    // Build matrix incrementally and check for dependence
-    result.coefficients.clear();
-    result.degree = 0;
-
-    for (size_t k = 1; k <= d; ++k) {
-        flint_linalg::NModMat test_matrix(d, k + 1, prime);
-        for (size_t i = 0; i <= k; ++i) {
-            for (size_t j = 0; j < d; ++j) { test_matrix.set_entry(j, i, power_matrix.get_entry(i, j)); }
-        }
-
-        nmod_mat_t mat_copy;
-        nmod_mat_init_set(mat_copy, test_matrix.get());
-        slong rank = nmod_mat_rref(mat_copy);
-
-        if (verbose_minpoly) {
-            std::cout << "  k=" << k << ", matrix " << d << "x" << (k + 1) << ", rank=" << rank << std::endl;
-        }
-
-        if (rank < static_cast<slong>(k + 1)) {
-            if (verbose_minpoly) { std::cout << "  Found linear dependence at degree " << k << std::endl; }
-            result.degree = k;
-
-            // Use the null space approach on the transposed matrix
-            nmod_mat_t transposed;
-            nmod_mat_init(transposed, d, k + 1, prime);
-            for (size_t i = 0; i <= k; ++i) {
-                for (size_t j = 0; j < d; ++j) { nmod_mat_set_entry(transposed, j, i, power_matrix.get_entry(i, j)); }
-            }
-
-            nmod_mat_t nullsp;
-            nmod_mat_init(nullsp, k + 1, d, prime);
-            slong nullity = nmod_mat_nullspace(nullsp, transposed);
-            if (verbose_minpoly) { std::cout << "  Nullspace dimension: " << nullity << std::endl; }
-
-            if (nullity > 0) {
-                result.coefficients.clear();
-                for (size_t i = 0; i <= k; ++i) { result.coefficients.push_back(nmod_mat_get_entry(nullsp, i, 0)); }
-
-                // Make monic if needed
-                ModularCoeff leading = result.coefficients[k];
-                if (leading != 1 && leading != 0) {
-                    ModularCoeff inv = modular_inverse(leading, prime);
-                    for (auto &c : result.coefficients) { c = (static_cast<AccModularCoeff>(c) * inv) % prime; }
-                }
-
-                if (verbose_minpoly) {
-                    std::cout << "  Found minimal polynomial of degree " << k << std::endl;
-                    std::cout << "  Coefficients: [";
-                    for (size_t i = 0; i < result.coefficients.size(); ++i) {
-                        if (i > 0) std::cout << ", ";
-                        std::cout << result.coefficients[i];
-                    }
-                    std::cout << "]" << std::endl;
-                }
-
-                result.success = true;
-                nmod_mat_clear(nullsp);
-                nmod_mat_clear(transposed);
-                nmod_mat_clear(mat_copy);
-                return result;
-            }
-
-            nmod_mat_clear(nullsp);
-            nmod_mat_clear(transposed);
-        }
-
-        nmod_mat_clear(mat_copy);
+    if (best_deg == d + 1) {
+        nmod_mat_clear(nullsp);
+        nmod_mat_clear(transposed);
+        return result;
     }
 
-    if (verbose_minpoly) { std::cout << "ERROR: No linear dependence found up to degree " << d << std::endl; }
+    // Make monic
+    if (best_deg > 0) {
+        ModularCoeff leading = best_coeffs[best_deg];
+        if (leading != 1 && leading != 0) {
+            ModularCoeff inv = modular_inverse(leading, prime);
+            for (auto &c : best_coeffs) { c = (static_cast<AccModularCoeff>(c) * inv) % prime; }
+        }
+    }
+
+    // Apply square-free reduction to handle non-radical ideals
+    size_t original_deg = best_deg;
+    auto square_free_coeffs = compute_square_free_part(best_coeffs, prime, &original_deg);
+    
+    // Update result with square-free polynomial
+    result.coefficients = std::move(square_free_coeffs);
+    result.degree = result.coefficients.size() > 0 ? result.coefficients.size() - 1 : 0;
+    result.original_degree = original_deg;  // Store original degree for multiplicity info
+    
+    if (original_deg > result.degree && result.degree > 0) {
+        result.multiplicity = original_deg / result.degree;
+        if (verbose_minpoly || getenv("RUR_MULTIPLICITY_VERBOSE")) {
+            std::cout << "  [Square-free applied] Original degree: " << original_deg 
+                     << " -> Square-free degree: " << result.degree 
+                     << " (multiplicity ~" << result.multiplicity << ")" << std::endl;
+        }
+    }
+    
+    result.success = true;
+
+    nmod_mat_clear(nullsp);
+    nmod_mat_clear(transposed);
+    return result;
+}
+
+/**
+ * @brief Compute square-free part of polynomial using FLINT
+ * 
+ * Given polynomial f, computes f / gcd(f, f') to remove repeated factors.
+ * This is essential for handling non-radical ideals where the minimal polynomial
+ * may have high multiplicities.
+ */
+std::vector<ModularCoeff>
+compute_square_free_part(const std::vector<ModularCoeff> &poly, 
+                         ModularCoeff prime,
+                         size_t *original_degree) {
+    
+    // Handle trivial cases
+    if (poly.empty()) return poly;
+    
+    // Find actual degree (highest non-zero coefficient)
+    size_t deg = 0;
+    for (size_t i = poly.size(); i-- > 0;) {
+        if (poly[i] != 0) {
+            deg = i;
+            break;
+        }
+    }
+    
+    if (original_degree) *original_degree = deg;
+    
+    // Degree 0 or 1 polynomials are already square-free
+    if (deg <= 1) return poly;
+    
+    // Initialize FLINT polynomial
+    nmod_poly_t f, f_prime, g, result_poly;
+    nmod_poly_init(f, prime);
+    nmod_poly_init(f_prime, prime);
+    nmod_poly_init(g, prime);
+    nmod_poly_init(result_poly, prime);
+    
+    // Set coefficients of f
+    for (size_t i = 0; i <= deg; ++i) {
+        nmod_poly_set_coeff_ui(f, i, poly[i]);
+    }
+    
+    // Compute derivative f'
+    nmod_poly_derivative(f_prime, f);
+    
+    // Compute g = gcd(f, f')
+    nmod_poly_gcd(g, f, f_prime);
+    
+    // Compute square-free part: f / g
+    if (nmod_poly_degree(g) > 0) {
+        // Non-trivial GCD means there are repeated factors
+        nmod_poly_div(result_poly, f, g);
+        
+        if (getenv("RUR_SQUARE_FREE_VERBOSE")) {
+            std::cout << "[Square-free reduction]" << std::endl;
+            std::cout << "  Original degree: " << deg << std::endl;
+            std::cout << "  GCD degree: " << nmod_poly_degree(g) << std::endl;
+            std::cout << "  Square-free degree: " << nmod_poly_degree(result_poly) << std::endl;
+            
+            // Estimate multiplicity
+            if (nmod_poly_degree(result_poly) > 0) {
+                size_t multiplicity = deg / nmod_poly_degree(result_poly);
+                std::cout << "  Estimated multiplicity: " << multiplicity << std::endl;
+            }
+        }
+    } else {
+        // Already square-free
+        nmod_poly_set(result_poly, f);
+    }
+    
+    // Extract coefficients
+    size_t result_deg = nmod_poly_degree(result_poly);
+    std::vector<ModularCoeff> result(result_deg + 1);
+    for (size_t i = 0; i <= result_deg; ++i) {
+        result[i] = nmod_poly_get_coeff_ui(result_poly, i);
+    }
+    
+    // Clean up
+    nmod_poly_clear(f);
+    nmod_poly_clear(f_prime);
+    nmod_poly_clear(g);
+    nmod_poly_clear(result_poly);
+    
     return result;
 }
 

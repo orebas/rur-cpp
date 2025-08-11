@@ -5,15 +5,15 @@
 #include <time.h>
 
 /* Forward declarations of axf4.c functions */
-extern void f4mod_init(int nvars, int elim, long long prime);
+extern void f4mod_init(long long nvars, long long elim, long long prime);
 extern void f4mod_free(void);
 extern void f4gb_mod(void);
 extern void f4_addrow(void* row);
 extern void* getpol(const char* str, int* length);
 extern void putpol(void* row, FILE* file);
-extern int f4_aload;  /* number of polynomials in basis */
+extern long long f4_aload;  /* number of polynomials in basis */
 extern void** f4_array; /* array of basis polynomials */
-extern char* vars[256]; /* variable names */
+extern char* vars[1024]; /* variable names - MAXVARS in axf4_lib.c */
 
 /* Global session tracking - F4 only supports one active session at a time */
 static axf4_session_t axf4_global_session = NULL;
@@ -187,7 +187,7 @@ static axf4_result_t axf4_compute_groebner_basis_impl(axf4_session_t session, in
     
     clock_t end_time = clock();
     result.computation_time = ((double)(end_time - start_time)) / CLOCKS_PER_SEC;
-    result.basis_size = f4_aload;
+    result.basis_size = (int)f4_aload;  /* Cast to int for API compatibility */
     
     /* Create output string using memory stream (secure alternative to tmpnam) */
     char* buffer = NULL;
@@ -202,7 +202,7 @@ static axf4_result_t axf4_compute_groebner_basis_impl(axf4_session_t session, in
     }
     
     /* Write all basis polynomials to memory stream */
-    for (int i = 0; i < f4_aload; i++) {
+    for (long long i = 0; i < f4_aload; i++) {
         putpol(f4_array[i], mem_stream);
         fputc('\n', mem_stream);
     }
@@ -300,7 +300,7 @@ typedef struct f4row {
 } f4row;
 
 int axf4_get_basis_size(void) {
-    return f4_aload;
+    return (int)f4_aload;  /* Cast to int for API compatibility */
 }
 
 int axf4_get_poly_term_count(int poly_index) {
@@ -353,9 +353,9 @@ int axf4_get_leading_term(int poly_index, unsigned int* out_lead_coeff, unsigned
         return -1;  /* Error: empty polynomial has no leading term */
     }
     
-    /* The leading term is the last term (F4 sorts in ascending degree order) */
-    *out_lead_coeff = (unsigned int)poly->cof[poly->len - 1];
-    *out_lead_monomial = (unsigned int)poly->mon[poly->len - 1];
+    /* The leading term is the first term (F4 stores highest degree first) */
+    *out_lead_coeff = (unsigned int)poly->cof[0];
+    *out_lead_monomial = (unsigned int)poly->mon[0];
     
     return 0;  /* Success */
 }
@@ -369,15 +369,15 @@ int axf4_get_all_leading_monomials(unsigned int* out_leading_monomials) {
     }
     
     int count = 0;
-    for (int i = 0; i < f4_aload; i++) {
+    for (long long i = 0; i < f4_aload; i++) {
         if (!f4_array[i]) {
             continue;  /* Skip null entries */
         }
         
         f4row* poly = (f4row*)f4_array[i];
         if (poly->len > 0) {
-            /* F4 sorts in ascending degree, so leading term is last */
-            out_leading_monomials[count] = (unsigned int)poly->mon[poly->len - 1];
+            /* Leading term should be the first term after sorting */
+            out_leading_monomials[count] = (unsigned int)poly->mon[0];
             count++;
         }
     }

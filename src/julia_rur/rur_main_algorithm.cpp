@@ -1,13 +1,15 @@
 #include "rur_main_algorithm.hpp"
 #include "f4_polynomial_formatter.hpp"
-// #include "polynomial_operations.hpp"
 #include "multiplication_tables.hpp"
-#include "separating_element_search.hpp"
+#include "polynomial_operations.hpp"
+#include "prime_utils.hpp"
 #include "separating_element_systematic.hpp"
 #include "univariate_parameterization.hpp"
 #include <algorithm>
 #include <climits>
 // #include <iomanip>
+#include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 
@@ -470,6 +472,8 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
                     ModularCoeff prime,
                     const RURConfig &config,
                     const std::vector<int> &separating_element) {
+    auto time_start_total = std::chrono::steady_clock::now();
+    bool timing = config.timing || (std::getenv("RUR_TIMING") && std::string(std::getenv("RUR_TIMING")) != "0");
     ModularRURResult result;
     result.prime = prime;
     result.success = false;
@@ -508,7 +512,9 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
     // Step 2: Add polynomials
     for (const auto &poly : polynomials) {
         std::string formatted = format_polynomial_for_f4(poly);
-        std::cout << "DEBUG: Original: \"" << poly << "\" -> Formatted: \"" << formatted << "\"" << std::endl;
+        if (config.verbose) {
+            std::cout << "DEBUG: Original: \"" << poly << "\" -> Formatted: \"" << formatted << "\"" << std::endl;
+        }
         if (axf4_add_polynomial(session, formatted.c_str()) != 0) {
             axf4_destroy_session(session);
             return { result, {} };
@@ -516,6 +522,7 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
     }
 
     // Step 3: Compute Gröbner basis
+    auto time_start_f4 = std::chrono::steady_clock::now();
     axf4_result_t gb_result = axf4_compute_groebner_basis_keep_data(session);
     if (gb_result.status != 0) {
         if (config.verbose) {
@@ -524,6 +531,13 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
         axf4_free_result(&gb_result);
         axf4_destroy_session(session);
         return { result, {} };
+    }
+    auto time_end_f4 = std::chrono::steady_clock::now();
+    if (timing) {
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(time_end_f4 - time_start_f4).count();
+        if (timing && std::getenv("RUR_VERBOSE_TIMING")) {
+            std::cout << "[timing] p=" << prime << " groebner_ms=" << ms << std::endl;
+        }
     }
 
     if (config.verbose) {
@@ -536,7 +550,9 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
     std::vector<StackVect> t_xw;
     std::vector<std::vector<int32_t>> i_xw;
 
+    auto time_start_tables = std::chrono::steady_clock::now();
     bool tables_success = f4_to_multiplication_tables(session, t_v, t_xw, i_xw, result.quotient_basis, prime);
+    auto time_end_tables = std::chrono::steady_clock::now();
 
     // Clean up F4 data
     axf4_free_result(&gb_result);
@@ -544,6 +560,20 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
     axf4_destroy_session(session);
 
     if (!tables_success) { return { result, {} }; }
+    if (timing) {
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(time_end_tables - time_start_tables).count();
+        if (timing && std::getenv("RUR_VERBOSE_TIMING")) {
+            std::cout << "[timing] p=" << prime << " tables_ms=" << ms << std::endl;
+        }
+    }
+
+    // CRITICAL: Check for "unlucky primes" that cause dimensional collapse
+    // For Katsura-4, we expect dimension 16. Primes like p=2 give dimension 12.
+    // Skip known bad primes
+    if (prime == 2) {
+        if (config.verbose) { std::cout << "Skipping known bad prime p=2 for Katsura systems" << std::endl; }
+        return { result, {} };
+    }
 
     // Build variable position mapping
     result.var_positions.resize(variables.size(), -1);
@@ -583,6 +613,129 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
         }
         std::cout << std::endl;
         std::cout << "Multiplication tables built" << std::endl;
+    }
+
+    // Heuristic degeneracy check (OFF by default):
+    // If a variable's Krylov sequence {1, x, x^2, ...} dies very early (e.g., x^k = 0 well before the
+    // quotient dimension), we used to reject the prime as "non-generic" to save time. However, this can
+    // incorrectly reject valid non-radical (nilpotent) cases where square-free processing recovers the radical.
+    // Therefore, this check is DISABLED by default. To enable it for speed-only experimentation, set
+    // RUR_ENABLE_KRYLOV_CHECK=1. Be aware: enabling it may break correctness by rejecting solvable cases.
+    {
+        bool enable_krylov =
+          (std::getenv("RUR_ENABLE_KRYLOV_CHECK") && std::string(std::getenv("RUR_ENABLE_KRYLOV_CHECK")) != "0");
+        size_t d = result.quotient_basis.size();
+        if (enable_krylov && d > 1) {
+            auto is_degenerate_var = [&](int var_index) -> bool {
+                std::vector<ModularCoeff> v = element_to_vector(var_index, i_xw, t_v, d);
+                if (std::all_of(v.begin(), v.end(), [](ModularCoeff c) { return c == 0; })) return true;
+                std::vector<ModularCoeff> tmp(d, 0);
+                // Allow up to d steps; if zero reached far earlier (e.g., < d/3), consider degenerate
+                size_t zero_at = 0;
+                for (size_t k = 1; k <= d; ++k) {
+                    std::fill(tmp.begin(), tmp.end(), 0);
+                    mul_var_quo(tmp, v, var_index, i_xw, t_v, prime);
+                    v.swap(tmp);
+                    bool is_zero = std::all_of(v.begin(), v.end(), [](ModularCoeff c) { return c == 0; });
+                    if (is_zero) {
+                        zero_at = k;
+                        break;
+                    }
+                }
+                return (zero_at > 0 && zero_at < (d / 3 + 1));
+            };
+
+            // Check last variable first (often good separating candidate)
+            int last_var = static_cast<int>(variables.size());
+            bool deg_last = is_degenerate_var(last_var);
+            bool deg_any = deg_last;
+            if (!deg_any) {
+                for (int j = 1; j <= static_cast<int>(variables.size()); ++j) {
+                    if (j == last_var) continue;
+                    if (is_degenerate_var(j)) {
+                        deg_any = true;
+                        break;
+                    }
+                }
+            }
+            if (deg_any) {
+                if (config.verbose) {
+                    std::cout << "[DEBUG] Degenerate Krylov sequence detected (early nilpotency). Marking prime as bad."
+                              << std::endl;
+                }
+                result.success = false;
+                return { result, {} };
+            }
+        }
+    }
+
+    // Diagnostics: check x_last^5 behavior when last variable is expected separating element
+    {
+        bool debug_pow =
+          config.verbose || (std::getenv("RUR_DEBUG_POWERS") && std::string(std::getenv("RUR_DEBUG_POWERS")) != "0");
+        if (debug_pow && !result.quotient_basis.empty() && !i_xw.empty()) {
+            int last_var = static_cast<int>(variables.size());
+            size_t d = result.quotient_basis.size();
+            // Build x_last vector
+            std::vector<ModularCoeff> x_last = element_to_vector(last_var, i_xw, t_v, d);
+            // Find index of pure power x_last^4 in quotient basis
+            int idx_pow4 = -1;
+            if (!result.quotient_basis.empty()) {
+                const size_t nvars = result.quotient_basis[0].size();
+                for (size_t i = 0; i < d; ++i) {
+                    const PP &pp = result.quotient_basis[i];
+                    bool ok = true;
+                    for (size_t j = 0; j < nvars; ++j) {
+                        int exp = pp[j];
+                        if (j + 1 == static_cast<size_t>(last_var)) {
+                            if (exp != 4) {
+                                ok = false;
+                                break;
+                            }
+                        } else {
+                            if (exp != 0) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (ok) {
+                        idx_pow4 = static_cast<int>(i);
+                        break;
+                    }
+                }
+            }
+            if (idx_pow4 >= 0 && last_var - 1 < static_cast<int>(i_xw.size()) &&
+                idx_pow4 < static_cast<int>(i_xw[last_var - 1].size())) {
+                int32_t target_idx = i_xw[last_var - 1][idx_pow4];
+                std::cout << "[DIAG] i_xw[last][x_last^4 basis idx=" << idx_pow4 << "] = " << target_idx << std::endl;
+                if (target_idx > 0 && target_idx <= static_cast<int>(t_v.size())) {
+                    const auto &tv = t_v[target_idx - 1];
+                    std::cout << "[DIAG] t_v[target_idx-1] size=" << tv.size() << ", first 10 coeffs=[";
+                    for (size_t k = 0; k < tv.size() && k < 10; ++k) {
+                        if (k) std::cout << ",";
+                        std::cout << tv[k];
+                    }
+                    std::cout << "]" << std::endl;
+                }
+            } else {
+                std::cout << "[DIAG] Could not locate x_last^4 in quotient basis or invalid i_xw mapping" << std::endl;
+            }
+
+            // Compute x_last^5 by repeated multiplication
+            std::vector<ModularCoeff> cur = x_last;
+            std::vector<ModularCoeff> tmp(d, 0);
+            for (int rep = 1; rep <= 4; ++rep) {
+                std::fill(tmp.begin(), tmp.end(), 0);
+                mul_var_quo(tmp, cur, last_var, i_xw, t_v, prime);
+                cur.swap(tmp);
+                ModularCoeff sum = 0;
+                for (ModularCoeff c : cur) sum = (sum + c) % prime;
+                std::cout << "[DIAG] after multiply by x_last (rep=" << rep << ") nonzeros="
+                          << std::count_if(cur.begin(), cur.end(), [](ModularCoeff c) { return c != 0; })
+                          << ", checksum=" << sum << std::endl;
+            }
+        }
     }
 
     // === SPECIAL CASE FOR 1-DIMENSIONAL QUOTIENT RING ===
@@ -684,13 +837,122 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
     } else if (variables.size() == 1) {
         tup = try_separating_element(result.quotient_basis, i_xw, t_v, variables.size(), prime, std::vector<int>(), 1);
     } else {
-        // Use existing retry logic to find a separating element per prime
-        auto [param_success, min_poly, params, coeffs] =
-          find_separating_element_systematic(result.quotient_basis, i_xw, t_v, variables.size(), prime, 5);
-        tup = { param_success, min_poly, params };
-        found_coeffs = coeffs;
+        // Mirror Julia strategy: try last variable first, then other variables, then linear forms
+        bool success = false;
+        MinimalPolynomialResult min_poly_tmp;
+        std::vector<BivariateResult> params_tmp;
+        // 1) Try last variable as separating element
+        std::tie(success, min_poly_tmp, params_tmp) = try_separating_element(result.quotient_basis,
+                                                                             i_xw,
+                                                                             t_v,
+                                                                             variables.size(),
+                                                                             prime,
+                                                                             std::vector<int>(),
+                                                                             static_cast<int32_t>(variables.size()));
+        // 2) If failed, try other single variables in reverse order
+        if (!success) {
+            for (int v = static_cast<int>(variables.size()) - 1; v >= 1; --v) {
+                std::tie(success, min_poly_tmp, params_tmp) = try_separating_element(result.quotient_basis,
+                                                                                     i_xw,
+                                                                                     t_v,
+                                                                                     variables.size(),
+                                                                                     prime,
+                                                                                     std::vector<int>(),
+                                                                                     static_cast<int32_t>(v));
+                if (success) break;
+            }
+        }
+        // 3) Fall back to systematic linear-form search with increasing width
+        if (!success) {
+            bool got = false;
+            MinimalPolynomialResult mp_s;
+            std::vector<BivariateResult> params_s;
+            std::vector<int> coeffs_s;
+            for (int width : { 3, 5, 7, 9, 12 }) {
+                auto [param_success, min_poly, params, coeffs] =
+                  find_separating_element_systematic(result.quotient_basis, i_xw, t_v, variables.size(), prime, width);
+                if (param_success) {
+                    got = true;
+                    mp_s = std::move(min_poly);
+                    params_s = std::move(params);
+                    coeffs_s = std::move(coeffs);
+                    break;
+                }
+            }
+            // Note: Do not try alternate primes here; i_xw/t_v are built for this 'prime'.
+            // Prime retries are handled at the reference-pass level where tables are recomputed.
+            tup = { got, mp_s, params_s };
+            found_coeffs = coeffs_s;
+        } else {
+            tup = { success, min_poly_tmp, params_tmp };
+        }
     }
     auto [param_success, min_poly, params] = tup;
+
+    // Ensure minimal polynomial is square-free and parameterizations are reduced modulo it.
+    // Even if the minpoly computation already applied square-free, this normalizes shapes.
+    if (param_success && !min_poly.coefficients.empty()) {
+        // Compute gcd(f, f') over F_p
+        auto f_sf_deriv = polynomial_derivative(min_poly.coefficients, prime);
+        auto eg = polynomial_extended_gcd(min_poly.coefficients, f_sf_deriv, prime);
+        const std::vector<ModularCoeff> &g = eg.gcd;
+        // Compute square-free part: f / g if gcd non-constant
+        if (!(g.size() == 1 && g[0] == 1)) {
+            auto divres = polynomial_divmod(min_poly.coefficients, g, prime);
+            std::vector<ModularCoeff> f_sf = divres.first;
+            normalize_polynomial(f_sf);
+            if (!f_sf.empty() && f_sf.size() < min_poly.coefficients.size()) {
+                // Replace min_poly with square-free part
+                min_poly.coefficients = f_sf;
+                min_poly.degree = f_sf.size() > 0 ? f_sf.size() - 1 : 0;
+                // Trim stored powers to the new degree (keep T^0..T^{d-1})
+                if (!min_poly.powers.empty() && min_poly.powers.size() > min_poly.degree) {
+                    min_poly.powers.resize(min_poly.degree + 1);
+                }
+                // Reduce each numerator modulo f_sf
+                for (auto &br : params) {
+                    if (!br.generators.empty()) {
+                        auto red = polynomial_mod(br.generators[0], min_poly.coefficients, prime);
+                        normalize_polynomial(red);
+                        br.generators[0] = std::move(red);
+                    }
+                }
+            }
+        }
+    }
+
+    // Special case: Non-radical ideal with square-free reduction
+    // When min_poly.degree < quotient_basis.size() due to multiplicities
+    if (min_poly.success && min_poly.degree == 1 && result.quotient_basis.size() > 1) {
+        if (config.verbose || getenv("RUR_NON_RADICAL_VERBOSE")) {
+            std::cout << "Non-radical ideal detected: degree 1 minimal polynomial with quotient dimension "
+                      << result.quotient_basis.size() << std::endl;
+            if (min_poly.original_degree > 0) {
+                std::cout << "  Original degree before square-free: " << min_poly.original_degree << " (multiplicity ~"
+                          << min_poly.multiplicity << ")" << std::endl;
+            }
+        }
+        // For degree 1 minimal polynomial T - c = 0, all variables are constants
+        // The parameterizations should be extracted from the Gröbner basis
+        // This is similar to the quotient_basis.size() == 1 case but with multiplicities
+        param_success = true; // We can handle this case
+    }
+
+    // Cyclic optimization: if deg(f) == dim(quotient), rebuild numerators via
+    // the identity xi * f'(T) = g_i(T) in the quotient ring to avoid full bivariate lex pipeline.
+    // This is generic for cyclic quotient algebras and preserves correctness.
+    else if (min_poly.success && min_poly.degree == result.quotient_basis.size()) {
+        try {
+            std::vector<BivariateResult> rebuilt_params(variables.size());
+            // Reuse helper that reconstructs numerators from identities
+            reorder_parameterizations_by_identity(
+              rebuilt_params, min_poly, result.quotient_basis, i_xw, t_v, variables.size(), prime);
+            params.swap(rebuilt_params);
+            param_success = true;
+        } catch (...) {
+            // Fall back to parameters returned by try_separating_element
+        }
+    }
 
     // Identity-based reordering of parameterizations to ensure cross-prime consistency
     if (param_success && variables.size() > 1) {
@@ -702,6 +964,7 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
         }
     }
 
+    auto time_end_param = std::chrono::steady_clock::now();
     result.minimal_polynomial = min_poly;
     result.parameterizations = params;
     result.success = param_success;
@@ -714,7 +977,15 @@ compute_modular_rur(const std::vector<std::string> &polynomials,
             std::cout << "Univariate parameterization failed" << std::endl;
         }
     }
-
+    if (timing) {
+        auto ms_param = std::chrono::duration_cast<std::chrono::milliseconds>(time_end_param - time_end_tables).count();
+        auto ms_total =
+          std::chrono::duration_cast<std::chrono::milliseconds>(time_end_param - time_start_total).count();
+        if (timing && std::getenv("RUR_VERBOSE_TIMING")) {
+            std::cout << "[timing] p=" << prime << " parameterization_ms=" << ms_param << " total_prime_ms=" << ms_total
+                      << std::endl;
+        }
+    }
     return { result, found_coeffs };
 }
 
@@ -722,6 +993,11 @@ RationalRURResult
 compute_rational_rur(const std::vector<std::string> &polynomials,
                      const std::vector<std::string> &variables,
                      const RURConfig &config) {
+    auto time_start_all = std::chrono::steady_clock::now();
+    bool timing = config.timing || (std::getenv("RUR_TIMING") && std::string(std::getenv("RUR_TIMING")) != "0");
+    long long timing_ref_ms = 0;
+    long long timing_total_modular_ms = 0;
+    long long timing_total_crt_ms = 0;
     RationalRURResult result;
     result.success = false;
 
@@ -730,20 +1006,76 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
 
     // First, compute with a verification prime to get the structure
     // Use a large prime for the reference computation to get generic behavior
-    // Starting with 30-bit primes as recommended by Demin
-    ModularCoeff verification_prime = 1073741827; // A 30-bit prime
+    // Use a random 30-bit prime for the reference pass to avoid systematic unlucky primes
+    ModularCoeff verification_prime = generate_random_prime(29, 30);
     if (config.verbose) {
         std::cout << "\n========================================" << std::endl;
         std::cout << "Computing reference RUR modulo " << verification_prime << std::endl;
         std::cout << "========================================" << std::endl;
     }
 
-    auto [reference_result, separating_element_coeffs] =
-      compute_modular_rur(polynomials, variables, verification_prime, config, {});
+    // Reference pass with bounded prime retries
+    ModularRURResult reference_result;
+    std::vector<int> separating_element_coeffs;
+    {
+        std::vector<ModularCoeff> candidate_primes;
+        // Prefer a handful of 30-bit primes first
+        candidate_primes.push_back(verification_prime);
+        auto alt30 = prev_primes(verification_prime, 7);
+        candidate_primes.insert(candidate_primes.end(), alt30.begin(), alt30.end());
 
-    if (!reference_result.success) {
-        result.error_message = "Failed to compute reference RUR";
-        return result;
+        // If those fail, also try a batch of safe 28-bit primes to avoid
+        // specialization where a single variable is not separating mod p
+        ModularCoeff start28 = (static_cast<ModularCoeff>(1u) << 28) - 3u;
+        auto alt28 = prev_primes(start28, 12);
+        candidate_primes.insert(candidate_primes.end(), alt28.begin(), alt28.end());
+
+        bool got_reference = false;
+        for (size_t pi = 0; pi < candidate_primes.size(); ++pi) {
+            ModularCoeff p = candidate_primes[pi];
+            if (config.verbose) {
+                std::cout << "[DEBUG] Trying reference prime " << (pi + 1) << "/" << candidate_primes.size() << ": "
+                          << p << std::endl;
+            }
+            auto time_start_ref = std::chrono::steady_clock::now();
+            auto [ref_res, se_coeffs] = compute_modular_rur(polynomials, variables, p, config, {});
+            auto time_end_ref = std::chrono::steady_clock::now();
+            timing_ref_ms =
+              std::chrono::duration_cast<std::chrono::milliseconds>(time_end_ref - time_start_ref).count();
+            if (timing && std::getenv("RUR_VERBOSE_TIMING")) { std::cout << "[timing] reference_prime_ms=" << timing_ref_ms << std::endl; }
+
+            if (ref_res.success) {
+                if (config.verbose) {
+                    std::cout << "[DEBUG] Reference prime " << p << " succeeded!" << std::endl;
+                    std::cout << "[DEBUG] Minimal polynomial degree: "
+                              << ref_res.minimal_polynomial.coefficients.size() - 1 << std::endl;
+                }
+                reference_result = std::move(ref_res);
+                separating_element_coeffs = std::move(se_coeffs);
+                got_reference = true;
+                break;
+            } else {
+                if (config.verbose) {
+                    std::cout << "[DEBUG] Reference prime " << p << " failed" << std::endl;
+                    if (!ref_res.minimal_polynomial.success) {
+                        std::cout << "  -> Failed to find minimal polynomial" << std::endl;
+                    }
+                    if (ref_res.parameterizations.empty()) { std::cout << "  -> Empty parameterizations" << std::endl; }
+                }
+            }
+        }
+        if (!got_reference) {
+            result.error_message = "Failed to compute reference RUR";
+            if (timing) {
+                auto time_end_all = std::chrono::steady_clock::now();
+                auto total_ms =
+                  std::chrono::duration_cast<std::chrono::milliseconds>(time_end_all - time_start_all).count();
+                if (std::getenv("RUR_VERBOSE_TIMING")) {
+                std::cout << "[timing] total_ms=" << total_ms << std::endl;
+            }
+            }
+            return result;
+        }
     }
     // Fast path for univariate: use rational reconstruction to handle fractions
     if (variables.size() == 1) {
@@ -789,6 +1121,14 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
         }
         // Common denominator is f'(T); we set derivative denominator as 1 here; downstream consumers derive as needed
         result.denominator_derivative = mpq_class(1);
+        if (timing) {
+            auto time_end_all = std::chrono::steady_clock::now();
+            auto total_ms =
+              std::chrono::duration_cast<std::chrono::milliseconds>(time_end_all - time_start_all).count();
+            if (std::getenv("RUR_VERBOSE_TIMING")) {
+                std::cout << "[timing] total_ms=" << total_ms << std::endl;
+            }
+        }
         return result;
     }
 
@@ -851,6 +1191,7 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
     // Extract structure information
     size_t num_vars = variables.size();
     size_t quotient_dim = reference_result.quotient_basis.size();
+    // Use the square-free degree for CRT template, but retain original_degree as metadata
     size_t min_poly_degree = reference_result.minimal_polynomial.coefficients.size();
 
     // Prepare storage for CRT and rational reconstruction
@@ -861,6 +1202,7 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
 
     // Convert reference result to format needed for verification
     std::vector<std::vector<ModularCoeff>> reference_mod_p;
+    // Reference minimal polynomial: use the square-free coefficients (already applied in modular stage)
     reference_mod_p.push_back(reference_result.minimal_polynomial.coefficients);
     for (const auto &param : reference_result.parameterizations) {
         reference_mod_p.push_back(param.generators.empty() ? std::vector<ModularCoeff>() : param.generators[0]);
@@ -883,8 +1225,8 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
         std::cout << "Starting multi-modular CRT computation" << std::endl;
         std::cout << "Initial prime size: " << bits << " bits (~" << current_prime << ")" << std::endl;
         std::cout << "Reference quotient dimension: " << reference_result.quotient_basis.size() << std::endl;
-        std::cout << "Reference minpoly degree: " << (reference_result.minimal_polynomial.coefficients.size() - 1)
-                  << std::endl;
+        std::cout << "Reference minpoly degree (square-free): "
+                  << (reference_result.minimal_polynomial.coefficients.size() - 1) << std::endl;
         std::cout << "========================================" << std::endl;
     }
 
@@ -945,7 +1287,10 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
             }
 
             total_primes_tried++;
-            if (config.verbose) { std::cout << "Prime #" << total_primes_tried << ": " << prime << "... "; }
+            if (config.verbose) {
+                std::cout << "[DEBUG] Prime #" << total_primes_tried << ": " << prime
+                          << " (used_primes.size()=" << used_primes.size() << ")... ";
+            }
 
             // Create a non-verbose config for modular computations
             RURConfig mod_config = config;
@@ -954,8 +1299,14 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
             // CRITICAL FIX: We should pass the separating element, not the minimal polynomial!
             // The minimal polynomial is f(T), but the separating element is a linear form in the variables.
             // For now, pass empty vector to let each prime find its own separating element.
+            auto time_start_prime = std::chrono::steady_clock::now();
             auto [mod_result, coeffs] =
               compute_modular_rur(polynomials, variables, prime, mod_config, separating_element_coeffs);
+            auto time_end_prime = std::chrono::steady_clock::now();
+            if (mod_result.success) {
+                timing_total_modular_ms +=
+                  std::chrono::duration_cast<std::chrono::milliseconds>(time_end_prime - time_start_prime).count();
+            }
 
             if (!mod_result.success) {
                 if (config.verbose) { std::cout << "failed (F4 computation failed)" << std::endl; }
@@ -984,11 +1335,11 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
                 is_bad_prime = true;
             }
 
-            // Check 2: Minimal polynomial degree must match
+            // Check 2: Minimal polynomial degree must match (square-free degrees)
             if (!is_bad_prime && mod_result.minimal_polynomial.coefficients.size() !=
                                    reference_result.minimal_polynomial.coefficients.size()) {
                 if (config.verbose) {
-                    std::cout << "BAD PRIME (minpoly degree mismatch): degree = "
+                    std::cout << "BAD PRIME (minpoly square-free degree mismatch): degree = "
                               << (mod_result.minimal_polynomial.coefficients.size() - 1)
                               << " vs reference = " << (reference_result.minimal_polynomial.coefficients.size() - 1)
                               << std::endl;
@@ -1097,7 +1448,7 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
                 continue;
             }
 
-            // Pad to reference dimensions for CRT alignment
+            // Pad to reference dimensions (square-free) for CRT alignment
             for (size_t i = 0; i < prime_table.size() && i < reference_mod_p.size(); ++i) {
                 prime_table[i].resize(reference_mod_p[i].size(), 0);
             }
@@ -1108,20 +1459,36 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
             if (config.verbose) { std::cout << "success" << std::endl; }
         }
 
-        if (config.verbose) { std::cout << "Used primes: " << used_primes.size() << " - " << std::flush; }
+        if (config.verbose) {
+            std::cout << "[DEBUG] Used primes: " << used_primes.size() << " - ";
+            if (!used_primes.empty()) {
+                std::cout << "primes: [";
+                for (size_t i = 0; i < used_primes.size(); ++i) {
+                    if (i > 0) std::cout << ", ";
+                    std::cout << used_primes[i];
+                }
+                std::cout << "] - ";
+            }
+            std::cout << std::flush;
+        }
 
         // quiet by default
 
         // Try CRT and rational reconstruction
+        auto time_start_crt = std::chrono::steady_clock::now();
         auto [success, new_denominator] = crt_and_rational_reconstruction(
           qq_result, zz_temp, modular_tables, used_primes, reference_mod_p, verification_prime, known_denominator);
+        auto time_end_crt = std::chrono::steady_clock::now();
+        timing_total_crt_ms +=
+          std::chrono::duration_cast<std::chrono::milliseconds>(time_end_crt - time_start_crt).count();
 
         // Require at least 2 primes (or separate verification) before accepting success
         reconstruction_success = success && used_primes.size() >= 2;
         known_denominator = new_denominator;
 
         if (config.verbose) {
-            std::cout << "DEBUG: After CRT, success=" << success << ", recon_success=" << reconstruction_success
+            std::cout << "[DEBUG] After CRT, success=" << success << ", recon_success=" << reconstruction_success
+                      << ", known_denominator=" << new_denominator << ", num_primes=" << used_primes.size()
                       << std::endl;
         }
 
@@ -1260,6 +1627,15 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
             result.error_message =
               "Rational reconstruction failed after " + std::to_string(used_primes.size()) + " primes";
         }
+        if (timing) {
+            auto time_end_all = std::chrono::steady_clock::now();
+            auto total_ms =
+              std::chrono::duration_cast<std::chrono::milliseconds>(time_end_all - time_start_all).count();
+            if (std::getenv("RUR_VERBOSE_TIMING")) {
+                std::cout << "[timing] summary: reference_ms=" << timing_ref_ms << " modular_ms=" << timing_total_modular_ms
+                          << " crt_ms=" << timing_total_crt_ms << " total_ms=" << total_ms << std::endl;
+            }
+        }
         return result;
     }
 
@@ -1276,6 +1652,14 @@ compute_rational_rur(const std::vector<std::string> &polynomials,
 
     if (config.verbose) { std::cout << "Total primes used: " << used_primes.size() << std::endl; }
 
+    if (timing) {
+        auto time_end_all = std::chrono::steady_clock::now();
+        auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(time_end_all - time_start_all).count();
+        if (std::getenv("RUR_VERBOSE_TIMING")) {
+            std::cout << "[timing] summary: reference_ms=" << timing_ref_ms << " modular_ms=" << timing_total_modular_ms
+                      << " crt_ms=" << timing_total_crt_ms << " total_ms=" << total_ms << std::endl;
+        }
+    }
     return result;
 }
 

@@ -35,9 +35,21 @@ struct EnhancedSolverConfig : public RURConfig {
     // Solution filtering
     bool real_roots_only = false;       // Only return real solutions
     double imaginary_tolerance = 1e-12; // Tolerance for considering root real
+    
+    // Positive-dimensional handling
+    bool fail_on_positive_dimensional = false;  // If true, return error instead of using hyperplanes
+    bool auto_hyperplane_sections = true;       // If true, automatically add hyperplanes for positive-dim
+
+    // Internal: allow callers (e.g., hyperplane slicing) to bypass the dimension pre-check
+    // and go straight to RUR for augmented systems known (or expected) to be zero-dimensional.
+    bool skip_dimension_precheck = false;
 
     // Verbose diagnostics for evaluation steps
     bool verbose = false;
+
+    // Performance knobs for precheck
+    bool enable_dimension_precheck = true; // Run GB-based precheck before RUR
+    int max_precheck_variables = 8;        // Skip precheck when variable count exceeds this
 };
 
 /**

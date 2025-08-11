@@ -1564,12 +1564,13 @@ void f4_select()
 	}
 	if (k > f4_select_plimit) k = f4_select_plimit;
 
-		printf("degree=%lld pairs=%lld/%lld with pairs limit %lld\n",
-			(long long int)d,
-			(long long int)k, 
-			(long long int)f4_pload,
-			(long long int)f4_select_plimit
-		);
+        if (getenv("RUR_VERBOSE_F4"))
+            printf("degree=%lld pairs=%lld/%lld with pairs limit %lld\n",
+                (long long int)d,
+                (long long int)k, 
+                (long long int)f4_pload,
+                (long long int)f4_select_plimit
+            );
 
 	/* allocate matrix */
 	if (2*k > f4_asize) {
@@ -2854,7 +2855,7 @@ void f4gb_mod()
 	p = f4_prime;
 	tt = realtime();
 
-	printf("F4 eliminate %lld/%lld variables mod p=%lld, %lld threads\n", (long long int)e, (long long int)n, (long long int)p, (long long int)numcpu());
+    if (getenv("RUR_VERBOSE_F4")) printf("F4 eliminate %lld/%lld variables mod p=%lld, %lld threads\n", (long long int)e, (long long int)n, (long long int)p, (long long int)numcpu());
 
 	for (i=0; i < f4_aload; i++) {
 		b = f4_array[i];

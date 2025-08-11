@@ -52,6 +52,9 @@ extract_f4_groebner_basis(std::vector<std::vector<PP>> &groebner_exponents,
     groebner_coefficients.clear();
     groebner_coefficients.resize(basis_size);
 
+    // Check for degenerate Gröbner basis (bad prime)
+    bool has_degenerate_poly = false;
+    
     // Extract each polynomial from F4
     for (int poly_idx = 0; poly_idx < basis_size; ++poly_idx) {
         // Get polynomial data from F4
@@ -65,6 +68,26 @@ extract_f4_groebner_basis(std::vector<std::vector<PP>> &groebner_exponents,
         if (term_count <= 0) {
             std::cerr << "Skipping empty polynomial " << poly_idx << std::endl;
             continue; // Skip empty polynomials
+        }
+        
+        // Single-term polynomials are normal for some systems (e.g., Katsura-4)
+        // They represent equations like x₄⁵ = 0 in the ideal
+        if (term_count == 1 && poly_idx > 0) {
+            // Get the monomial to check its degree
+            coeffs.resize(1);
+            monomials.resize(1);
+            axf4_get_poly_data(poly_idx, coeffs.data(), monomials.data());
+            PP pp = decode_f4_monomial(monomials[0], num_variables);
+            int total_degree = 0;
+            for (int deg : pp) total_degree += deg;
+            
+            // Note: Single-term polynomials are not necessarily indicative of bad primes
+            // For Katsura-4, we expect x₃²x₄² and x₄⁵ as valid GB elements
+            if (total_degree >= 4 && std::getenv("RUR_DEBUG_GB")) {
+                std::cout << "INFO: Polynomial " << poly_idx << " has only one term with degree " 
+                          << total_degree << std::endl;
+            }
+            // Don't set has_degenerate_poly = true; this is normal for some systems
         }
 
         // Allocate space and get actual data
@@ -90,17 +113,23 @@ extract_f4_groebner_basis(std::vector<std::vector<PP>> &groebner_exponents,
             ModularCoeff coeff = static_cast<ModularCoeff>(coeffs[term_idx]);
             groebner_coefficients[poly_idx][term_idx] = normalize_symmetric(coeff, prime);
 
-            // Debug output disabled
-            // std::cout << "  Poly " << poly_idx << " Term " << term_idx
-            //           << ": monomial=" << monomials[term_idx]
-            //           << " -> PP=[";
-            // for (size_t j = 0; j < pp.size(); ++j) {
-            //     if (j > 0) std::cout << ",";
-            //     std::cout << pp[j];
-            // }
-            // std::cout << "], coeff=" << coeffs[term_idx] << std::endl;
+            // Debug output for problematic polynomials
+            if (poly_idx == 12 || poly_idx == 15) {
+                std::cout << "  DEBUG Poly " << poly_idx << " Term " << term_idx
+                          << ": monomial=" << monomials[term_idx]
+                          << " -> PP=[";
+                for (size_t j = 0; j < pp.size(); ++j) {
+                    if (j > 0) std::cout << ",";
+                    std::cout << pp[j];
+                }
+                std::cout << "], coeff=" << coeffs[term_idx] 
+                          << " (normalized=" << groebner_coefficients[poly_idx][term_idx] << ")" << std::endl;
+            }
         }
     }
+    
+    // Note: has_degenerate_poly is no longer set since single-term polynomials are normal
+    // The algorithm will detect truly bad primes later if no separating element can be found
 
     return true;
 }
@@ -165,6 +194,17 @@ f4_to_multiplication_tables(axf4_session_t session,
 
     try {
         quotient_basis = compute_quotient_basis(leading_terms);
+    } catch (const std::domain_error &e) {
+        // This is thrown when the system is not zero-dimensional
+        std::string error_msg = e.what();
+        if (error_msg.find("not define zero-dimensional") != std::string::npos) {
+            // System is positive-dimensional - this is the expected failure for RUR
+            // Don't print to stderr - this is an expected condition that will be handled by caller
+            // Set a special marker to indicate positive-dimensional system
+            // We'll return false but the caller should check for this specific error
+            return false;
+        }
+        throw; // Re-throw if it's a different domain_error
     } catch (const std::runtime_error &e) {
         // Check if this is the "GB = {1}" case (system has no solutions mod p)
         std::string error_msg = e.what();
@@ -173,10 +213,16 @@ f4_to_multiplication_tables(axf4_session_t session,
             // This is expected for some primes, so we don't print an error
             return false;
         }
-        std::cerr << "Error computing quotient basis: " << e.what() << std::endl;
+        // Unexpected runtime error - log only if verbose
+        if (verbose_f4) {
+            std::cerr << "Error computing quotient basis: " << e.what() << std::endl;
+        }
         return false;
     } catch (const std::exception &e) {
-        std::cerr << "Error computing quotient basis: " << e.what() << std::endl;
+        // Unexpected exception - log only if verbose
+        if (verbose_f4) {
+            std::cerr << "Error computing quotient basis: " << e.what() << std::endl;
+        }
         return false;
     }
 

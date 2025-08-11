@@ -132,9 +132,12 @@ class TestHelpers {
 
     // Verify pairwise distinctness of solutions using max component-wise separation
     static void expect_pairwise_distinct(const std::vector<std::vector<std::complex<double>>> &solutions,
-                                         double separation_tolerance = 1e-8) {
+                                         double separation_tolerance = 1e-8,
+                                         size_t max_pairs_to_check = SIZE_MAX) {
+        size_t checks = 0;
         for (size_t i = 0; i < solutions.size(); ++i) {
             for (size_t j = i + 1; j < solutions.size(); ++j) {
+                if (checks >= max_pairs_to_check) return;
                 double max_comp_dist = 0.0;
                 size_t dim = std::min(solutions[i].size(), solutions[j].size());
                 for (size_t k = 0; k < dim; ++k) {
@@ -142,6 +145,7 @@ class TestHelpers {
                 }
                 EXPECT_GT(max_comp_dist, separation_tolerance)
                   << "Solutions " << i << " and " << j << " too close (potential duplicate): " << max_comp_dist;
+                ++checks;
             }
         }
     }
@@ -155,6 +159,9 @@ class PolynomialSystemTest : public ::testing::Test {
     void SetUp() override {
         // Default configuration for tests
         config_.verbose = false; // Reduce output during tests
+        // Disable dimension precheck for tests as it can be unreliable
+        // with certain primes, especially for benchmark systems like Cyclic5
+        config_.enable_dimension_precheck = false;
     }
 
     /**

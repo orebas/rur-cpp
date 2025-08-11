@@ -9,8 +9,22 @@ endif()
 
 project(rur-cpp)
 
-set(CMAKE_CXX_STANDARD 17)
+# Use C++23 standard
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Ensure we're using the system's default GCC (version 14.2.0)
+# This is typically already the case, but we can be explicit
+if(NOT CMAKE_C_COMPILER)
+    set(CMAKE_C_COMPILER gcc)
+endif()
+if(NOT CMAKE_CXX_COMPILER)
+    set(CMAKE_CXX_COMPILER g++)
+endif()
+
+# Add warning flags to ALL build configurations
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -pedantic")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -pedantic")
 
 # Add debug flags for memory issues and undefined behavior
 # ASAN disabled for now - will re-enable when ready to fix memory management
@@ -47,6 +61,7 @@ message(STATUS "Using local FLINT installation: ${FLINT_INCLUDE_DIR}")
 message(STATUS "FLINT library: ${FLINT_LIBRARY}")
 
 # Add global compiler flags to prioritize local FLINT over system/vcpkg FLINT
+# Note: Prepending to ensure FLINT headers take priority
 set(CMAKE_CXX_FLAGS "-I${FLINT_INCLUDE_DIR} ${CMAKE_CXX_FLAGS}")
 set(CMAKE_C_FLAGS "-I${FLINT_INCLUDE_DIR} ${CMAKE_C_FLAGS}")
 
@@ -167,6 +182,7 @@ set(SOURCES
     src/julia_rur/numerical_roots_flint.cpp
     src/julia_rur/polynomial_solver_enhanced.cpp
     src/julia_rur/f4_polynomial_formatter.cpp
+    src/julia_rur/prime_utils.cpp
     src/julia_rur/hyperplane_sections.cpp
     src/julia_rur/polynomial_evaluator.cpp
     src/julia_rur/polynomial_expander.cpp
@@ -470,6 +486,7 @@ if(GTEST_FOUND)
         test/gtest/test_numerical_roots.cpp
         test/gtest/test_integration.cpp
         test/gtest/test_benchmark_systems.cpp
+        test/gtest/test_positive_dimensional.cpp
     )
     
     target_link_libraries(rur_tests 

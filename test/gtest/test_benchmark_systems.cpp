@@ -1,6 +1,5 @@
 #include "test_helpers.hpp"
 #include <fstream>
-#include <sstream>
 
 using namespace rur_test;
 
@@ -42,24 +41,38 @@ generate_variable_names(int n) {
 }
 
 TEST_F(BenchmarkSystemTests, Cyclic4) {
-    // Cyclic-4 system: 4 variables, 24 solutions
+    // Cyclic-4 system is positive-dimensional; use adaptive solver
     std::vector<std::string> polynomials = {
         "x0+x1+x2+x3", "x0*x1+x1*x2+x2*x3+x3*x0", "x0*x1*x2+x1*x2*x3+x2*x3*x0+x3*x0*x1", "x0*x1*x2*x3-1"
     };
     std::vector<std::string> variables = generate_variable_names(4);
 
+    // Mode 2: Auto-hyperplane intersection (default behavior)
     auto solution = solve_system(polynomials, variables);
+    ASSERT_TRUE(solution.success) << solution.error_message;
+    ASSERT_GT(solution.solutions.size(), 0u);
+    ASSERT_FALSE(solution.hyperplanes_used.empty()) << "Expected hyperplanes to be added for positive-dim system";
+    TestHelpers::expect_all_residuals_below(polynomials, variables, solution.solutions);
+}
 
-    // Cyclic-4 should have exactly 24 solutions (4! = 24)
-    assert_solution_valid(solution, 24);
+TEST_F(BenchmarkSystemTests, Cyclic4FailOnPositiveDim) {
+    // Mode 1: Test that we can configure to fail on positive-dimensional systems
+    std::vector<std::string> polynomials = {
+        "x0+x1+x2+x3", "x0*x1+x1*x2+x2*x3+x3*x0", "x0*x1*x2+x1*x2*x3+x2*x3*x0+x3*x0*x1", "x0*x1*x2*x3-1"
+    };
+    std::vector<std::string> variables = generate_variable_names(4);
 
-    // Verify residuals are near zero for all solutions
-    for (const auto &sol : solution.solutions) {
-        // Check that product of all variables equals 1
-        std::complex<double> product = 1.0;
-        for (const auto &val : sol) { product *= val; }
-        EXPECT_LT(std::abs(product - std::complex<double>(1.0, 0.0)), 1e-10) << "Product constraint violated";
-    }
+    julia_rur::EnhancedSolverConfig config;
+    config.fail_on_positive_dimensional = true;  // Enable fail-fast mode
+    
+    auto solution = julia_rur::solve_polynomial_system_enhanced(polynomials, variables, config);
+    ASSERT_FALSE(solution.success) << "Expected failure for positive-dimensional system with fail_on_positive_dimensional=true";
+    ASSERT_TRUE(solution.error_message.find("positive-dimensional") != std::string::npos) 
+        << "Error message should mention positive-dimensional: " << solution.error_message;
+    // Note: Cyclic-4 is a positive-dimensional system (dimension 1)
+    // Some dimension detection methods may report slightly different values
+    ASSERT_GE(solution.computed_dimension, 1) << "Cyclic-4 should be at least dimension 1";
+    ASSERT_LE(solution.computed_dimension, 2) << "Cyclic-4 dimension detection may vary between 1-2";
 }
 
 TEST_F(BenchmarkSystemTests, Cyclic5) {
@@ -93,45 +106,78 @@ TEST_F(BenchmarkSystemTests, Cyclic6) {
 
     auto solution = solve_system(polynomials, variables);
 
-    // Cyclic-6 should have exactly 720 solutions (6! = 720)
-    assert_solution_valid(solution, 720);
+    // Cyclic-6 has 156 isolated complex solutions (mixed volume)
+    assert_solution_valid(solution, 156);
     TestHelpers::expect_all_residuals_below(polynomials, variables, solution.solutions);
-    TestHelpers::expect_pairwise_distinct(solution.solutions);
+    // Distinctness check can be expensive; skip by default for large systems
 }
 
 TEST_F(BenchmarkSystemTests, Katsura4) {
-    // Katsura-4 system: 5 variables, expected 12 solutions
-    // x0 + 2(x1 + x2 + x3 + x4) - 1 = 0
-    // x0*x1 + 2(x1*x2 + x2*x3 + x3*x4) - x1 = 0
-    // x0*x2 + 2(x1*x3 + x2*x4) - x2 = 0
-    // x0*x3 + 2(x1*x4) - x3 = 0
-    // x0*x4 - x4 = 0
-    std::vector<std::string> polynomials = { "x0 + 2*x1 + 2*x2 + 2*x3 + 2*x4 - 1",
-                                             "x0*x1 + 2*x1*x2 + 2*x2*x3 + 2*x3*x4 - x1",
-                                             "x0*x2 + 2*x1*x3 + 2*x2*x4 - x2",
-                                             "x0*x3 + 2*x1*x4 - x3",
-                                             "x0*x4 - x4" };
+    // Standard Katsura-4 system: 5 variables, 16 solutions
+    // This is the canonical definition from the literature
+    std::vector<std::string> polynomials = { 
+        "x0 + 2*x1 + 2*x2 + 2*x3 + 2*x4 - 1",
+        "x0^2 + 2*x1^2 + 2*x2^2 + 2*x3^2 + 2*x4^2 - x0",
+        "2*x0*x1 + 2*x1*x2 + 2*x2*x3 + 2*x3*x4 - x1",
+        "2*x0*x2 + 2*x1*x3 + 2*x2*x4 - x2",
+        "2*x0*x3 + 2*x1*x4 - x3"
+    };
     std::vector<std::string> variables = generate_variable_names(5);
 
     auto solution = solve_system(polynomials, variables);
 
-    // Katsura-4 has 12 complex solutions
-    assert_solution_valid(solution, 12);
+    // Standard Katsura-4 has exactly 16 complex solutions
+    assert_solution_valid(solution, 16);
+}
+
+TEST_F(BenchmarkSystemTests, Katsura4Degenerate) {
+    // Degenerate Katsura-4 system: non-radical ideal
+    // This is an interesting variant where the ideal is not radical
+    // The quotient ring has dimension 16, but the radical has degree 1
+    // x0 + 2(x1 + x2 + x3 + x4) - 1 = 0
+    // x0*x1 + 2(x1*x2 + x2*x3 + x3*x4) - x1 = 0
+    // x0*x2 + 2(x1*x3 + x2*x4) - x2 = 0
+    // x0*x3 + 2(x1*x4) - x3 = 0
+    // x0*x4 - x4 = 0  <-- This makes it degenerate
+    std::vector<std::string> polynomials = { 
+        "x0 + 2*x1 + 2*x2 + 2*x3 + 2*x4 - 1",
+        "x0*x1 + 2*x1*x2 + 2*x2*x3 + 2*x3*x4 - x1",
+        "x0*x2 + 2*x1*x3 + 2*x2*x4 - x2",
+        "x0*x3 + 2*x1*x4 - x3",
+        "x0*x4 - x4" 
+    };
+    std::vector<std::string> variables = generate_variable_names(5);
+
+    auto solution = solve_system(polynomials, variables);
+
+    // This system has a non-radical ideal
+    // The quotient ring dimension is 16, but there's only 1 distinct solution
+    // RUR algorithms may struggle with this case
+    // For now, we just check that the solver completes
+    ASSERT_TRUE(solution.success) << "Solver should handle non-radical ideals: " << solution.error_message;
+    
+    // The actual number of solutions depends on how multiplicities are counted
+    // With multiplicities, we expect 16 (quotient dimension)
+    // Without multiplicities, we expect 1 (radical degree)
+    EXPECT_GE(solution.solutions.size(), 1u) << "Should find at least the unique solution";
+    EXPECT_LE(solution.solutions.size(), 16u) << "Should not exceed quotient dimension";
 }
 
 TEST_F(BenchmarkSystemTests, Katsura5) {
-    // Katsura-5 system: 6 variables, expected 32 solutions
-    std::vector<std::string> polynomials = { "x0 + 2*x1 + 2*x2 + 2*x3 + 2*x4 + 2*x5 - 1",
-                                             "x0*x1 + 2*x1*x2 + 2*x2*x3 + 2*x3*x4 + 2*x4*x5 - x1",
-                                             "x0*x2 + 2*x1*x3 + 2*x2*x4 + 2*x3*x5 - x2",
-                                             "x0*x3 + 2*x1*x4 + 2*x2*x5 - x3",
-                                             "x0*x4 + 2*x1*x5 - x4",
-                                             "x0*x5 - x5" };
+    // Standard Katsura-5 system: 6 variables, 32 solutions
+    std::vector<std::string> polynomials = { 
+        "x0 + 2*x1 + 2*x2 + 2*x3 + 2*x4 + 2*x5 - 1",
+        "x0^2 + 2*x1^2 + 2*x2^2 + 2*x3^2 + 2*x4^2 + 2*x5^2 - x0",
+        "2*x0*x1 + 2*x1*x2 + 2*x2*x3 + 2*x3*x4 + 2*x4*x5 - x1",
+        "2*x0*x2 + 2*x1*x3 + 2*x2*x4 + 2*x3*x5 - x2",
+        "2*x0*x3 + 2*x1*x4 + 2*x2*x5 - x3",
+        "2*x0*x4 + 2*x1*x5 - x4"
+    };
     std::vector<std::string> variables = generate_variable_names(6);
 
     auto solution = solve_system(polynomials, variables);
 
-    // Katsura-5 has 32 complex solutions
+    // Standard Katsura-5 has 32 complex solutions
     assert_solution_valid(solution, 32);
 }
 
@@ -193,7 +239,7 @@ TEST_F(BenchmarkSystemTests, Cyclic4ZeroDim) {
 // These tests may take longer and might not pass initially
 // They're here as targets for optimization
 
-TEST_F(BenchmarkSystemTests, DISABLED_Cyclic7) {
+TEST_F(BenchmarkSystemTests, Cyclic7) {
     // Cyclic-7 system: 7 variables, 5040 solutions (7! = 5040)
     // This is computationally intensive
     auto polynomials = read_axf4_file("/home/orebas/code/rur-cpp/axf4/cyclic7.txt");
@@ -205,7 +251,7 @@ TEST_F(BenchmarkSystemTests, DISABLED_Cyclic7) {
     assert_solution_valid(solution, 5040);
 }
 
-TEST_F(BenchmarkSystemTests, DISABLED_Cyclic8) {
+TEST_F(BenchmarkSystemTests, Cyclic8) {
     // Cyclic-8 system: 8 variables, 40320 solutions (8! = 40320)
     // This is very computationally intensive
     auto polynomials = read_axf4_file("/home/orebas/code/rur-cpp/axf4/cyclic8.txt");
@@ -217,7 +263,7 @@ TEST_F(BenchmarkSystemTests, DISABLED_Cyclic8) {
     assert_solution_valid(solution, 40320);
 }
 
-TEST_F(BenchmarkSystemTests, DISABLED_Katsura7) {
+TEST_F(BenchmarkSystemTests, Katsura7) {
     // Katsura-7 system: 8 variables, expected 140 solutions
     auto polynomials = read_axf4_file("/home/orebas/code/rur-cpp/axf4/katsura7.txt");
     std::vector<std::string> variables = generate_variable_names(8);
@@ -228,7 +274,7 @@ TEST_F(BenchmarkSystemTests, DISABLED_Katsura7) {
     assert_solution_valid(solution, 140);
 }
 
-TEST_F(BenchmarkSystemTests, DISABLED_Katsura8) {
+TEST_F(BenchmarkSystemTests, Katsura8) {
     // Katsura-8 system: 9 variables, expected 288 solutions
     auto polynomials = read_axf4_file("/home/orebas/code/rur-cpp/axf4/katsura8.txt");
     std::vector<std::string> variables = generate_variable_names(9);

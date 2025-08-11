@@ -147,7 +147,7 @@ void compute_fill_quo_gb(
 );
 
 /**
- * Vectorize a Gröbner basis polynomial in the quotient basis
+ * Vectorize a polynomial in the quotient basis
  * Helper function for compute_fill_quo_gb that converts a polynomial
  * from monomial-coefficient representation to quotient basis vector
  * 
@@ -156,6 +156,20 @@ void compute_fill_quo_gb(
  * @param quotient_basis The quotient basis monomials
  * @param result Output vector in quotient basis (already allocated)
  * @param prime Modular arithmetic prime
+ * @param skip_leading_term If true, skip the first term (for GB elements, following Julia's approach)
+ */
+void vectorize_polynomial_in_quotient_basis(
+    const std::vector<PP>& exponents,
+    const std::vector<ModularCoeff>& coefficients,
+    const std::vector<PP>& quotient_basis,
+    std::vector<ModularCoeff>& result,
+    ModularCoeff prime,
+    bool skip_leading_term
+);
+
+/**
+ * Vectorize a polynomial in the quotient basis (backward compatibility overload)
+ * Calls the version with skip_leading_term=false
  */
 void vectorize_polynomial_in_quotient_basis(
     const std::vector<PP>& exponents,
