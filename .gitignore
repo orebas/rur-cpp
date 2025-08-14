@@ -112,4 +112,4 @@ core.*
 !demo/
 !examples/
 !docs/
-!RationalUnivariateRepresentation.jl/
+!RationalUnivariateRepresentation.jl/external/flint/
