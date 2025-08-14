@@ -45,7 +45,7 @@ set(FLINT_LIBRARY_DIR "${LOCAL_FLINT_ROOT}/lib")
 
 # Verify local FLINT installation exists
 if(NOT EXISTS "${FLINT_INCLUDE_DIR}/flint/flint.h")
-    message(FATAL_ERROR "FLINT 3.3.1 headers not found at ${FLINT_INCLUDE_DIR}/flint/flint.h. Make sure FLINT has been built and installed in external/flint-install.")
+    message(FATAL_ERROR "FLINT headers not found at ${FLINT_INCLUDE_DIR}/flint/flint.h. Please run ./setup-deps.sh to build and install FLINT.")
 endif()
 
 # Find the FLINT library - explicitly use local version

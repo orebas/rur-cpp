@@ -33,8 +33,9 @@ check_command gcc || MISSING_DEPS=1
 check_command g++ || MISSING_DEPS=1
 check_command make || MISSING_DEPS=1
 check_command cmake || MISSING_DEPS=1
-check_command wget || MISSING_DEPS=1
-check_command tar || MISSING_DEPS=1
+check_command git || MISSING_DEPS=1
+check_command autoconf || MISSING_DEPS=1
+check_command libtool || MISSING_DEPS=1
 
 # Check for required libraries using pkg-config or direct detection
 echo -e "\n${YELLOW}Checking for required libraries...${NC}"
@@ -68,13 +69,13 @@ if [ $MISSING_DEPS -eq 1 ]; then
     echo -e "Please install the required packages first:"
     echo -e "\n${YELLOW}Ubuntu/Debian:${NC}"
     echo -e "  sudo apt-get update"
-    echo -e "  sudo apt-get install build-essential cmake wget"
+    echo -e "  sudo apt-get install build-essential cmake git autoconf libtool"
     echo -e "  sudo apt-get install libgmp-dev libmpfr-dev libeigen3-dev libgtest-dev"
     echo -e "\n${YELLOW}Fedora/RHEL:${NC}"
-    echo -e "  sudo dnf install gcc gcc-c++ make cmake wget"
+    echo -e "  sudo dnf install gcc gcc-c++ make cmake git autoconf libtool"
     echo -e "  sudo dnf install gmp-devel mpfr-devel eigen3-devel gtest-devel"
     echo -e "\n${YELLOW}macOS (with Homebrew):${NC}"
-    echo -e "  brew install cmake wget gmp mpfr eigen googletest"
+    echo -e "  brew install cmake git autoconf automake libtool gmp mpfr eigen googletest"
     exit 1
 fi
 
@@ -85,59 +86,63 @@ if [ -d "external/flint-install/lib" ] && [ -f "external/flint-install/lib/libfl
     exit 0
 fi
 
-# Download and build FLINT 3.3.1
-echo -e "\n${YELLOW}Setting up FLINT 3.3.1...${NC}"
+# Download and build FLINT
+echo -e "\n${YELLOW}Setting up FLINT...${NC}"
 
 # Create external directory
 mkdir -p external
 cd external
 
 # Clean up any partial builds
-if [ -d "flint-3.3.1" ]; then
-    echo "Cleaning up previous partial build..."
-    rm -rf flint-3.3.1
+if [ -d "flint" ]; then
+    echo "Cleaning up previous FLINT source..."
+    rm -rf flint
 fi
 if [ -d "flint-install" ]; then
+    echo "Cleaning up previous FLINT installation..."
     rm -rf flint-install
 fi
 
-# Download FLINT if not already present
-if [ ! -f "flint-3.3.1.tar.gz" ]; then
-    echo "Downloading FLINT 3.3.1..."
-    wget -q --show-progress https://www.flintlib.org/flint-3.3.1.tar.gz
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Error: Failed to download FLINT${NC}"
-        exit 1
-    fi
-else
-    echo "Using existing FLINT 3.3.1 archive..."
+# Clone FLINT from GitHub
+echo "Cloning FLINT from GitHub..."
+git clone --depth 1 --branch v3.1.3-p1 https://github.com/flintlib/flint.git
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Error: Failed to clone FLINT from GitHub${NC}"
+    echo -e "${YELLOW}Please check your internet connection and try again${NC}"
+    exit 1
 fi
 
-# Extract FLINT
-echo "Extracting FLINT..."
-tar xzf flint-3.3.1.tar.gz
-
 # Build FLINT
-cd flint-3.3.1
+cd flint
+
+# Bootstrap if needed (for git version)
+if [ -f "bootstrap.sh" ]; then
+    echo "Bootstrapping FLINT..."
+    ./bootstrap.sh
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Error: FLINT bootstrap failed${NC}"
+        exit 1
+    fi
+fi
 echo "Configuring FLINT (this may take a minute)..."
-./configure --prefix=$(pwd)/../flint-install --with-gmp --with-mpfr --disable-shared > configure.log 2>&1
+./configure --prefix=$(pwd)/../flint-install --with-gmp --with-mpfr --disable-shared
 if [ $? -ne 0 ]; then
-    echo -e "${RED}Error: FLINT configuration failed. Check external/flint-3.3.1/configure.log for details${NC}"
+    echo -e "${RED}Error: FLINT configuration failed${NC}"
     exit 1
 fi
 
 echo "Building FLINT (this will take several minutes)..."
 echo "Using $(nproc) parallel jobs..."
-make -j$(nproc) > make.log 2>&1
+make -j$(nproc)
 if [ $? -ne 0 ]; then
-    echo -e "${RED}Error: FLINT build failed. Check external/flint-3.3.1/make.log for details${NC}"
+    echo -e "${RED}Error: FLINT build failed${NC}"
     exit 1
 fi
 
 echo "Installing FLINT..."
-make install > install.log 2>&1
+make install
 if [ $? -ne 0 ]; then
-    echo -e "${RED}Error: FLINT installation failed. Check external/flint-3.3.1/install.log for details${NC}"
+    echo -e "${RED}Error: FLINT installation failed${NC}"
     exit 1
 fi
 

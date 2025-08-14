@@ -30,7 +30,8 @@ cd rur-cpp
 
 # 2. Install system dependencies (Ubuntu/Debian)
 sudo apt-get update
-sudo apt-get install build-essential cmake libgmp-dev libmpfr-dev libeigen3-dev libgtest-dev
+sudo apt-get install build-essential cmake git autoconf libtool
+sudo apt-get install libgmp-dev libmpfr-dev libeigen3-dev libgtest-dev
 
 # 3. Run the automated setup script (builds FLINT 3.3.1)
 ./setup-deps.sh
@@ -51,17 +52,20 @@ That's it! The setup script handles all the complex dependency management automa
 #### Ubuntu/Debian
 ```bash
 sudo apt-get update
-sudo apt-get install build-essential cmake libgmp-dev libmpfr-dev libeigen3-dev libgtest-dev
+sudo apt-get install build-essential cmake git autoconf libtool
+sudo apt-get install libgmp-dev libmpfr-dev libeigen3-dev libgtest-dev
 ```
 
 #### Fedora/RHEL
 ```bash
-sudo dnf install gcc gcc-c++ make cmake gmp-devel mpfr-devel eigen3-devel gtest-devel
+sudo dnf install gcc gcc-c++ make cmake git autoconf libtool
+sudo dnf install gmp-devel mpfr-devel eigen3-devel gtest-devel
 ```
 
 #### macOS (with Homebrew)
 ```bash
-brew install cmake gmp mpfr eigen googletest
+brew install cmake git autoconf automake libtool
+brew install gmp mpfr eigen googletest
 ```
 
 ### Manual Build (Advanced)
