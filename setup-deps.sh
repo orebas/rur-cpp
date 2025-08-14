@@ -104,8 +104,8 @@ if [ -d "flint-install" ]; then
 fi
 
 # Clone FLINT from GitHub
-echo "Cloning FLINT from GitHub..."
-git clone --depth 1 --branch v3.1.3-p1 https://github.com/flintlib/flint.git
+echo "Cloning latest FLINT from GitHub..."
+git clone --depth 1 https://github.com/flintlib/flint.git
 if [ $? -ne 0 ]; then
     echo -e "${RED}Error: Failed to clone FLINT from GitHub${NC}"
     echo -e "${YELLOW}Please check your internet connection and try again${NC}"
