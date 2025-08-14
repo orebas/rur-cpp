@@ -15,31 +15,72 @@ A high-performance C++ implementation of the Rational Univariate Representation 
 
 - C++23 compatible compiler (GCC 14+, Clang 16+)
 - CMake 3.16+
-- FLINT 3.3.1+ with ARB support
 - GMP, MPFR libraries
 - Eigen3 for numerical root finding
-- vcpkg for dependency management (optional but recommended)
+- FLINT 3.3.1 with ARB support (automatically built by setup script)
 
-### Building from Source
+### Quick Start (Recommended)
+
+The easiest way to build RUR-CPP:
 
 ```bash
+# 1. Clone the repository
 git clone https://github.com/yourusername/rur-cpp.git
 cd rur-cpp
 
-# Initialize vcpkg (if not already done)
-git submodule update --init
-./vcpkg/bootstrap-vcpkg.sh
+# 2. Install system dependencies (Ubuntu/Debian)
+sudo apt-get update
+sudo apt-get install build-essential cmake libgmp-dev libmpfr-dev libeigen3-dev libgtest-dev
 
-# Install dependencies
-./vcpkg/vcpkg install gmp mpfr eigen3 gtest
+# 3. Run the automated setup script (builds FLINT 3.3.1)
+./setup-deps.sh
 
-# Build FLINT 3.3.1 (required for ARB support)
-cd external
-# Follow FLINT build instructions
-cd ..
+# 4. Build the project
+mkdir -p build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j$(nproc)
+
+# 5. Run tests to verify everything works
+./rur_tests
+```
+
+That's it! The setup script handles all the complex dependency management automatically.
+
+### Platform-Specific Installation
+
+#### Ubuntu/Debian
+```bash
+sudo apt-get update
+sudo apt-get install build-essential cmake libgmp-dev libmpfr-dev libeigen3-dev libgtest-dev
+```
+
+#### Fedora/RHEL
+```bash
+sudo dnf install gcc gcc-c++ make cmake gmp-devel mpfr-devel eigen3-devel gtest-devel
+```
+
+#### macOS (with Homebrew)
+```bash
+brew install cmake gmp mpfr eigen googletest
+```
+
+### Manual Build (Advanced)
+
+If you prefer to manage dependencies manually:
+
+```bash
+# Build FLINT 3.3.1 manually
+mkdir -p external && cd external
+wget https://www.flintlib.org/flint-3.3.1.tar.gz
+tar xzf flint-3.3.1.tar.gz
+cd flint-3.3.1
+./configure --prefix=$(pwd)/../flint-install --with-gmp --with-mpfr
+make -j$(nproc)
+make install
+cd ../..
 
 # Build the project
-mkdir build-release && cd build-release
+mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j$(nproc)
 ```
