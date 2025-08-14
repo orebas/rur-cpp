@@ -1,10 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 
-# Note: Using local FLINT 3.3.1 instead of vcpkg
-# vcpkg still used for GMP/MPFR dependencies
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+# Note: Using local FLINT 3.3.1 
+# vcpkg is optional - only used if explicitly provided or if system libraries are missing
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake" AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake"
         CACHE STRING "Vcpkg toolchain file")
+    message(STATUS "Found vcpkg, using it for dependency management")
 endif()
 
 project(rur-cpp)
